@@ -7,6 +7,12 @@
  * keypair, requests the user's wallet signature for the fee-payer side, sends,
  * confirms, and verifies the on-chain bonding curve before reporting success.
  *
+ * Optional dev buy: the official `create_v2 + buy_v2` bundle
+ * (PUMP_SDK.createV2AndBuyInstructions) executes creation and the creator's
+ * initial purchase ATOMICALLY in one transaction, funded and signed by the
+ * connected creator wallet. The buy's max SOL cost is the exact user-selected
+ * amount — the program can never spend more than that.
+ *
  * No secret material ever leaves the browser in this flow.
  */
 import {
@@ -16,9 +22,15 @@ import {
   PublicKey,
   Transaction,
   TransactionInstruction,
-  VersionedTransaction,
 } from "@solana/web3.js";
+import type BN from "bn.js";
+import type { Global } from "@pump-fun/pump-sdk";
 import { PUMP_PROGRAM_ID, bondingCurveAddress, getRpcUrl, MANDATORY_SUFFIX, isSpawnVanityAddress } from "@/lib/config";
+
+/** Wrapped-SOL mint (quote asset of pump.fun curves). Same constant as
+ *  @solana/spl-token's NATIVE_MINT, declared locally to avoid a new direct
+ *  dependency in the web bundle. */
+const NATIVE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 
 export interface LaunchParams {
   name: string;
@@ -68,22 +80,113 @@ export async function buildCreateTransaction(
 }
 
 /**
- * Signs and submits: mint keypair partial-signs locally; the wallet signs as
- * fee payer. Returns the tx signature.
+ * Fetches the pump.fun `Global` account (curve constants + fee schedule) used
+ * to quote the initial buy. One RPC round-trip.
  */
-export async function signAndSubmit(
+export async function fetchPumpGlobal(connection: Connection): Promise<Global> {
+  const { OnlinePumpSdk } = await import("@pump-fun/pump-sdk");
+  return new OnlinePumpSdk(connection).fetchGlobal();
+}
+
+/**
+ * Expected token amount out for a SOL budget on a brand-new (not yet created)
+ * SOL-quoted curve. Pure math against the Global account — no RPC.
+ */
+export async function computeExpectedTokens(global: Global, solLamports: bigint): Promise<BN> {
+  const { getBuyTokenAmountFromSolAmount } = await import("@pump-fun/pump-sdk");
+  const { default: BN } = await import("bn.js");
+  return getBuyTokenAmountFromSolAmount({
+    global,
+    feeConfig: null,
+    mintSupply: null,
+    bondingCurve: null,
+    amount: new BN(solLamports.toString()),
+    quoteMint: NATIVE_MINT,
+  });
+}
+
+export interface CreateAndBuyParams extends LaunchParams {
+  /** Dev buy amount in lamports — the exact authorized spend for the buy. */
+  devBuyLamports: bigint;
+  /** pump.fun Global account (fetched via fetchPumpGlobal). */
+  global: Global;
+}
+
+/**
+ * Builds the official pump.fun ATOMIC create + initial buy transaction:
+ * create_v2 and buy_v2 execute in one transaction, so no other buyer can
+ * front-run the creator's initial purchase. The buy_v2 argument pair is
+ * (expected token amount, max SOL cost) — the program can never charge more
+ * than `devBuyLamports` for the buy, regardless of curve movement between
+ * quoting and signing.
+ */
+export async function buildCreateAndBuyTransaction(
+  params: CreateAndBuyParams,
+  opts?: { recentBlockhash?: string }
+): Promise<Transaction> {
+  if (!isSpawnVanityAddress(params.mintKeypair.publicKey.toBase58())) {
+    throw new Error("mint keypair does not end in 'Spw' — refusing to launch");
+  }
+  if (params.devBuyLamports <= 0n) {
+    throw new Error("dev buy amount must be positive");
+  }
+  const { PUMP_SDK } = await import("@pump-fun/pump-sdk");
+  const { default: BN } = await import("bn.js");
+
+  const amount = await computeExpectedTokens(params.global, params.devBuyLamports);
+  if (amount.isZero() || amount.isNeg()) {
+    throw new Error("dev buy quote returned no tokens — launch blocked");
+  }
+
+  const ixs: TransactionInstruction[] = await PUMP_SDK.createV2AndBuyInstructions({
+    global: params.global,
+    mint: params.mintKeypair.publicKey,
+    name: params.name,
+    symbol: params.symbol,
+    uri: params.uri,
+    creator: params.payer,
+    user: params.payer,
+    amount,
+    solAmount: new BN(params.devBuyLamports.toString()),
+    mayhemMode: false,
+  });
+
+  const tx = new Transaction();
+  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 500_000 }));
+  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+  for (const ix of ixs) tx.add(ix);
+  tx.feePayer = params.payer;
+  if (opts?.recentBlockhash) tx.recentBlockhash = opts.recentBlockhash;
+  return tx;
+}
+
+
+/**
+ * Requests the wallet signature: mint keypair partial-signs locally, the
+ * wallet signs as fee payer. Returns the fully-signed raw bytes, ready to
+ * broadcast. Split from submission so "waiting for wallet confirmation" is a
+ * distinct, accurate progress state.
+ */
+export async function signLaunch(
   tx: Transaction,
   mintKeypair: Keypair,
-  wallet: LaunchSigner,
-  connection: Connection
-): Promise<string> {
+  wallet: LaunchSigner
+): Promise<Uint8Array> {
   tx.partialSign(mintKeypair);
   const signed = await wallet.signTransaction(tx);
   // Best-effort scrub of our partial signature copy.
   tx.signatures = [];
-  const raw = signed.serialize();
+  return signed.serialize({ requireAllSignatures: true, verifySignatures: true });
+}
+
+/** Broadcasts the signed transaction. Only call once per signed payload. */
+export async function submitLaunch(
+  raw: Uint8Array,
+  connection: Connection
+): Promise<string> {
   return connection.sendRawTransaction(raw, { skipPreflight: false, maxRetries: 3 });
 }
+
 
 /** Confirms with exponential backoff; throws on failure/timeout. */
 export async function confirmLaunch(
@@ -145,4 +248,60 @@ export async function verifyLaunchOnChain(
   const complete = bcInfo.data.length > 48 ? bcInfo.data[48] === 1 : false;
 
   return { mint: mintBase58, bondingCurve: bcAddress, complete, signature };
+}
+
+export interface VerifiedDevBuy {
+  /** SOL that left the creator wallet (buy amount + fees + rent), lamports. */
+  solSpentLamports: number | null;
+  /** Tokens the creator received for the dev buy, in token units (decimals applied). */
+  tokensReceived: number | null;
+}
+
+/**
+ * Verifies the dev buy from confirmed on-chain transaction data: the tx must
+ * have succeeded, the creator's SOL decrease is read from balance diffs and
+ * the token increase from pre/post token balances of the creator's accounts
+ * for this mint. Throws if the tx failed or cannot be found — callers must
+ * never report an unverified purchase as successful.
+ */
+export async function verifyDevBuyOnChain(
+  mintBase58: string,
+  creatorBase58: string,
+  signature: string
+): Promise<VerifiedDevBuy> {
+  const connection = new Connection(getRpcUrl(), "confirmed");
+  const tx = await connection.getParsedTransaction(signature, {
+    maxSupportedTransactionVersion: 0,
+    commitment: "confirmed",
+  });
+  if (!tx) throw new Error("transaction not found on-chain — dev buy unverified");
+  if (tx.meta?.err) {
+    throw new Error(`transaction failed on-chain: ${JSON.stringify(tx.meta.err)}`);
+  }
+
+  // SOL spent by the fee payer (first account key = creator wallet here).
+  let solSpentLamports: number | null = null;
+  if (tx.meta?.preBalances && tx.meta?.postBalances) {
+    solSpentLamports = tx.meta.preBalances[0] - tx.meta.postBalances[0];
+  }
+
+  // Tokens received by the creator: pre→post diff on the creator's accounts
+  // holding this mint. Other buyers' accounts (if any) are excluded by owner.
+  let tokensReceived: number | null = null;
+  const pre = tx.meta?.preTokenBalances ?? [];
+  const post = tx.meta?.postTokenBalances ?? [];
+  for (const b of post) {
+    if (b.mint !== mintBase58) continue;
+    if (b.owner && b.owner !== creatorBase58) continue;
+    const before =
+      pre.find((p) => p.accountIndex === b.accountIndex)?.uiTokenAmount.uiAmount ?? 0;
+    const after = b.uiTokenAmount.uiAmount;
+    if (after != null) tokensReceived = after - (before ?? 0);
+    break;
+  }
+
+  if (tokensReceived === null || tokensReceived <= 0) {
+    throw new Error("no creator token balance increase found — dev buy unverified");
+  }
+  return { solSpentLamports, tokensReceived };
 }

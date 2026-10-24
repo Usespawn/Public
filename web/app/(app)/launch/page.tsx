@@ -13,7 +13,8 @@ export default function LaunchPage() {
         <h1 className="font-display text-2xl font-bold">Launch your token</h1>
         <p className="mt-1 text-sm text-faint">
           Spawn Your Token. Own Your Launch. Every SpawnPad mint ends in{" "}
-          <span className="font-mono text-acid">Spw</span>.
+          <span className="font-mono text-acid">Spw</span> — generated automatically
+          when you launch, with an optional dev buy.
         </p>
       </div>
       <LaunchWizard />

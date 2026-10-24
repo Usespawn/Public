@@ -41,6 +41,20 @@ export function expectedAttempts(suffix: string): number {
   return Math.pow(58, suffix.length);
 }
 
+/**
+ * Conservative automatic worker count for hands-off generation:
+ * half the logical cores, bounded to [2, 4]. Keeps phones responsive and
+ * never saturates a desktop. Never exposed as a user setting.
+ */
+export function autoWorkerCount(hardwareConcurrency?: number): number {
+  const hc =
+    typeof hardwareConcurrency === "number" && Number.isFinite(hardwareConcurrency) && hardwareConcurrency > 0
+      ? hardwareConcurrency
+      : 4;
+  return Math.max(2, Math.min(4, Math.floor(hc / 2)));
+}
+
+
 const BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
 export class VanityGrinder {

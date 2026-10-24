@@ -24,16 +24,23 @@ export interface TokenInfo {
   imageUrl: string | null;
 }
 
+/** Shared validity rule for the token info section (name, symbol, image). */
+export function isInfoValid(info: TokenInfo): boolean {
+  return (
+    info.name.trim().length >= 2 && info.name.length <= 64 &&
+    info.symbol.trim().length >= 2 && info.symbol.length <= 10 &&
+    Boolean(info.imageCid && info.imageUrl)
+  );
+}
+
 export function StepInfoForm({
   info,
   setInfo,
   connected,
-  onContinue,
 }: {
   info: TokenInfo;
   setInfo: (patch: Partial<TokenInfo>) => void;
   connected: boolean;
-  onContinue: () => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -90,10 +97,6 @@ export function StepInfoForm({
       setUploadError(e instanceof Error ? e.message : "image upload failed");
     }
   }, [file, setInfo]);
-
-  const valid =
-    info.name.trim().length >= 2 && info.name.length <= 64 &&
-    info.symbol.trim().length >= 2 && info.symbol.length <= 10;
 
   const imageReady = Boolean(info.imageCid && info.imageUrl);
 
@@ -169,14 +172,6 @@ export function StepInfoForm({
           <p className="mt-1 font-mono text-[11px] text-faint">image pinned publicly · {info.imageUrl}</p>
         )}
       </Field>
-      <button
-        disabled={!valid || !connected || !imageReady}
-        onClick={onContinue}
-        title={imageReady ? undefined : "Upload a token image to continue"}
-        className="rounded-full bg-acid px-6 py-2.5 font-mono text-[13px] font-bold text-obsidian shadow-glow transition-colors hover:bg-[#7DF0FF] disabled:bg-raised/60 disabled:text-faint disabled:shadow-none"
-      >
-        Continue →
-      </button>
     </div>
   );
 }

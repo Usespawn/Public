@@ -1,64 +1,98 @@
-"use client";
+﻿"use client";
 
 /**
- * SpawnPad launch wizard orchestrator — 7 steps, explicit vanity state machine.
- * No launch is possible without a verified Spw mint (enforced by step flow and
- * re-asserted at transaction build time).
+ * SpawnPad public launch flow â€” single page.
+ *
+ * Token info + optional DEV BUY + "Launch Token". The Spw vanity mint is
+ * generated AUTOMATICALLY in the background (Web Workers, conservative count)
+ * when the user launches; the vanity console, worker settings, attempt
+ * counters, logs and keypair material are never shown to the public.
+ *
+ * Transaction shape: official pump.fun create_v2 (plus buy_v2 when the dev
+ * buy is on) in ONE atomic transaction, built client-side with the ground
+ * mint keypair, partial-signed by it and signed/broadcast by the creator's
+ * connected wallet. Results are verified on-chain before success is shown.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { VanityGrinder, GrindExhaustedError } from "@/lib/vanity/grinder";
+import type BN from "bn.js";
+import type { Global } from "@pump-fun/pump-sdk";
+import { VanityGrinder } from "@/lib/vanity/grinder";
 import { VanityState, VanityMachine } from "@/lib/vanity/state-machine";
 import { MANDATORY_SUFFIX, isSpawnVanityAddress, getNetwork } from "@/lib/config";
 import {
   buildCreateTransaction,
-  signAndSubmit,
+  buildCreateAndBuyTransaction,
+  fetchPumpGlobal,
+  computeExpectedTokens,
+  signLaunch,
+  submitLaunch,
   confirmLaunch,
   verifyLaunchOnChain,
+  verifyDevBuyOnChain,
 } from "@/lib/launch/launch";
+import {
+  validateDevBuyAmount,
+  estimateDevBuyTotals,
+  formatSol,
+  type DevBuyValidation,
+} from "@/lib/launch/devbuy";
 import { uploadMetadataToIpfs } from "@/lib/metadata/upload-client";
 import { isIpfsHttpsUrl, isPlausibleCid } from "@/lib/metadata/upload";
-import { StepBadge, StatePill } from "./ui";
-import { StepInfoForm, type TokenInfo } from "./StepInfoForm";
-import { StepVanity } from "./StepVanity";
-import { StepValidate, StepConfigure } from "./StepValidate";
-import { StepReview } from "./StepReview";
-import { StepExecute, StepSuccess } from "./StepExecute";
-
-const STEP_LABELS = [
-  "Token info",
-  "Generate Spw mint",
-  "Validate mint",
-  "Configure",
-  "Review & approve",
-  "Execute",
-  "Success",
-];
+import { StepInfoForm, isInfoValid, type TokenInfo } from "./StepInfoForm";
+import { DevBuyPanel } from "./DevBuyPanel";
+import { LaunchProgress, type LaunchPhase } from "./LaunchProgress";
+import { SuccessScreen, type DevBuyResultView } from "./SuccessScreen";
+import { ErrorLine, StatePill } from "./ui";
 
 const EMPTY_INFO: TokenInfo = {
   name: "", symbol: "", description: "", website: "", x: "", telegram: "",
   imageCid: null, imageUrl: null,
 };
 
+const DEFAULT_DEV_BUY_SOL = 0.05;
+
+/** Display helper: pump.fun tokens use 6 decimals. */
+function formatTokens(amt: BN): string {
+  const whole = Number(amt.toString());
+  const tokens = whole / 1e6;
+  if (tokens >= 1000) return tokens.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  if (tokens >= 1) return tokens.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return tokens.toLocaleString("en-US", { maximumFractionDigits: 6 });
+}
+
 export function LaunchWizard() {
   const { publicKey, signTransaction, connected } = useWallet();
   const { connection } = useConnection();
   const machine = useRef(new VanityMachine());
   const grinder = useRef(new VanityGrinder());
+  const cancelledRef = useRef(false);
+  const runningRef = useRef(false);
+  const sentAtRef = useRef<number | null>(null);
+  const globalCache = useRef<Global | null>(null);
 
-  const [step, setStep] = useState(0);
   const [info, setInfoState] = useState<TokenInfo>(EMPTY_INFO);
-  const [state, setState] = useState<VanityState>(VanityState.IDLE);
-  const [workerCount, setWorkerCount] = useState(2);
-  const [progress, setProgress] = useState({ attempts: 0, aps: 0, elapsed: 0 });
-  const [mint58, setMint58] = useState<string | null>(null);
-  const [mintKeypair, setMintKeypair] = useState<Keypair | null>(null);
+  const [devBuyEnabled, setDevBuyEnabled] = useState(false);
+  const [devBuySol, setDevBuySol] = useState<number>(DEFAULT_DEV_BUY_SOL);
+  const [balanceLamports, setBalanceLamports] = useState<number | null>(null);
+  const [estimate, setEstimate] = useState<{ tokens: string | null; loading: boolean; error: string | null }>({
+    tokens: null, loading: false, error: null,
+  });
+
+  const [phase, setPhase] = useState<LaunchPhase>("idle");
+  const [subStatus, setSubStatus] = useState<string | null>(null);
+  const [grind, setGrind] = useState({ attempts: 0, aps: 0, elapsed: 0 });
   const [error, setError] = useState<string | null>(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [rechecking, setRechecking] = useState(false);
   const [signature, setSignature] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
-  const [backendStatus, setBackendStatus] = useState<string | null>(null);
+  const [mint58, setMint58] = useState<string | null>(null);
+  const [devBuyResult, setDevBuyResult] = useState<DevBuyResultView>({
+    enabled: false, solSpentSol: null, tokensReceived: null,
+  });
+
+  const inFlight = phase !== "idle" && phase !== "success";
 
   const setInfo = useCallback((patch: Partial<TokenInfo>) => {
     setInfoState((prev) => ({ ...prev, ...patch }));
@@ -66,74 +100,116 @@ export function LaunchWizard() {
 
   const transition = useCallback((to: VanityState) => {
     machine.current.transition(to);
-    setState(to);
   }, []);
 
-  const startGrind = useCallback(async () => {
+  // Wallet balance (also re-fetched when a flow ends or fails).
+  const refreshBalance = useCallback(async () => {
+    if (!publicKey) {
+      setBalanceLamports(null);
+      return;
+    }
+    try {
+      setBalanceLamports(await connection.getBalance(publicKey));
+    } catch {
+      setBalanceLamports(null);
+    }
+  }, [connection, publicKey]);
+  useEffect(() => {
+    void refreshBalance();
+  }, [refreshBalance, phase]);
+
+  // Dev buy validation (panel + launch button gating).
+  const devBuyValidation = useMemo(() => {
+    if (!devBuyEnabled) return { ok: true as const };
+    return validateDevBuyAmount(devBuySol, balanceLamports);
+  }, [devBuyEnabled, devBuySol, balanceLamports]);
+
+  // Live token estimate for the panel (debounced; the exact quote is
+  // recomputed at transaction build time — this number is informational only).
+  useEffect(() => {
+    if (!devBuyEnabled || !connected) {
+      setEstimate({ tokens: null, loading: false, error: null });
+      return;
+    }
+    const v = validateDevBuyAmount(devBuySol, null);
+    const vLamports = v.lamports;
+    if (!v.ok || vLamports == null) {
+      setEstimate({ tokens: null, loading: false, error: null });
+      return;
+    }
+    setEstimate((e) => ({ ...e, loading: true, error: null }));
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          if (!globalCache.current) globalCache.current = await fetchPumpGlobal(connection);
+          const amt = await computeExpectedTokens(globalCache.current, vLamports);
+          setEstimate({ tokens: formatTokens(amt), loading: false, error: null });
+        } catch {
+          setEstimate({
+            tokens: null,
+            loading: false,
+            error: "live quote unavailable — the exact amount is computed at launch",
+          });
+        }
+      })();
+    }, 500);
+    return () => clearTimeout(t);
+  }, [devBuyEnabled, devBuySol, connected, connection]);
+
+  const launch = useCallback(async () => {
+    // Duplicate-submission guard (double click, re-entrancy).
+    if (runningRef.current) return;
+    runningRef.current = true;
+    cancelledRef.current = false;
+    sentAtRef.current = null;
     setError(null);
     setSignature(null);
-    setBackendStatus(null);
-    transition(VanityState.GENERATING);
+    setSubmitted(false);
+    setDevBuyResult({ enabled: devBuyEnabled, solSpentSol: null, tokensReceived: null });
     try {
+      // ---- 1. Validation --------------------------------------------------
+      if (!connected || !publicKey || !signTransaction) {
+        throw new Error("connect a Solana wallet first");
+      }
+      if (!isInfoValid(info)) {
+        throw new Error("complete the token information and upload the image first");
+      }
+      const devVal: DevBuyValidation = devBuyEnabled
+        ? validateDevBuyAmount(devBuySol, balanceLamports)
+        : { ok: true };
+      if (!devVal.ok || (devBuyEnabled && !devVal.lamports)) {
+        throw new Error(devVal.error ?? "invalid dev buy amount");
+      }
+
+      // ---- 2. Automatic vanity generation (background workers) ------------
+      transition(VanityState.GENERATING);
+      setPhase("grinding");
+      setGrind({ attempts: 0, aps: 0, elapsed: 0 });
       const res = await grinder.current.grind({
         suffix: MANDATORY_SUFFIX,
-        workerCount,
-        onProgress: (p) =>
-          setProgress({ attempts: p.attempts, aps: p.attemptsPerSecond, elapsed: p.elapsedMs }),
+        // Conservative automatic worker count — never a user setting.
+        workerCount:
+          typeof navigator !== "undefined" && navigator.hardwareConcurrency
+            ? Math.max(2, Math.min(4, Math.floor(navigator.hardwareConcurrency / 2)))
+            : 2,
+        onProgress: (p) => setGrind({ attempts: p.attempts, aps: p.attemptsPerSecond, elapsed: p.elapsedMs }),
       });
+      if (cancelledRef.current) return;
+      // Independent re-verification — never trust the worker blindly.
+      if (!(isSpawnVanityAddress(res.address) && res.mint.publicKey.toBase58() === res.address)) {
+        throw new Error("generated mint failed independent validation");
+      }
       transition(VanityState.GENERATED);
-      setMint58(res.address);
-      setMintKeypair(res.mint);
       transition(VanityState.VALIDATING);
-      await new Promise((r) => setTimeout(r, 400));
-      const ok = isSpawnVanityAddress(res.address) && res.mint.publicKey.toBase58() === res.address;
-      if (!ok) {
-        transition(VanityState.FAILED);
-        setError("mint failed independent validation");
-        return;
-      }
       transition(VanityState.READY_TO_LAUNCH);
-      setStep(2);
-    } catch (e: any) {
-      if (e.name === "AbortError") {
-        transition(VanityState.CANCELLED);
-      } else if (e instanceof GrindExhaustedError) {
-        transition(VanityState.FAILED);
-        setError(`exhausted ${e.attempts.toLocaleString()} attempts without a match — try again`);
-      } else {
-        transition(VanityState.FAILED);
-        setError(String(e?.message || e));
+      setMint58(res.address);
+
+      // ---- 3. Preparing launch transaction --------------------------------
+      setPhase("preparing");
+      setSubStatus("uploading metadata…");
+      if (!info.imageCid || !info.imageUrl) {
+        throw new Error("token image must be uploaded to IPFS before launching");
       }
-    }
-  }, [transition, workerCount]);
-
-  const cancelGrind = useCallback(() => {
-    grinder.current.cancel();
-    transition(VanityState.CANCELLED);
-  }, [transition]);
-
-  const executeLaunch = useCallback(async () => {
-    if (!publicKey || !signTransaction || !mintKeypair || !mint58) {
-      setError("connect a wallet first");
-      return;
-    }
-    if (!info.imageCid || !info.imageUrl) {
-      setError("token image must be uploaded to IPFS before launching");
-      return;
-    }
-    setSubmitting(true);
-    setError(null);
-    try {
-      const bal = await connection.getBalance(publicKey);
-      if (bal < 0.05 * LAMPORTS_PER_SOL) {
-        throw new Error(
-          `insufficient SOL: ${(bal / LAMPORTS_PER_SOL).toFixed(4)} (need ≥ 0.05 for rent + fees)`
-        );
-      }
-      transition(VanityState.LAUNCHING);
-
-      // Metadata upload — happens on this explicit user action, BEFORE the tx
-      // is built. Any failure here aborts without broadcasting anything.
       const meta = await uploadMetadataToIpfs({
         name: info.name.trim(),
         symbol: info.symbol.trim().toUpperCase(),
@@ -143,163 +219,327 @@ export function LaunchWizard() {
         x: info.x || undefined,
         telegram: info.telegram || undefined,
       });
-
-      // Validate the final metadata URI before it enters the transaction.
+      if (cancelledRef.current) return;
       const metadataUri = meta.url;
       if (!isIpfsHttpsUrl(metadataUri) || !isPlausibleCid(meta.cid)) {
         throw new Error("metadata upload returned an invalid URI — launch blocked");
       }
 
+      setSubStatus("building transaction…");
       const { blockhash } = await connection.getLatestBlockhash("finalized");
-      const tx = await buildCreateTransaction(
-        {
-          name: info.name.trim(),
-          symbol: info.symbol.trim().toUpperCase(),
-          uri: metadataUri,
-          payer: publicKey,
-          mintKeypair,
-        },
-        { recentBlockhash: blockhash }
-      );
-      const sig = await signAndSubmit(tx, mintKeypair, { signTransaction }, connection);
+      const common = {
+        name: info.name.trim(),
+        symbol: info.symbol.trim().toUpperCase(),
+        uri: metadataUri,
+        payer: publicKey,
+        mintKeypair: res.mint,
+      };
+      let tx;
+      if (devBuyEnabled && devVal.lamports) {
+        // ATOMIC create + initial buy (official create_v2 + buy_v2 bundle).
+        if (!globalCache.current) globalCache.current = await fetchPumpGlobal(connection);
+        if (cancelledRef.current) return;
+        tx = await buildCreateAndBuyTransaction(
+          { ...common, devBuyLamports: devVal.lamports, global: globalCache.current },
+          { recentBlockhash: blockhash }
+        );
+      } else {
+        tx = await buildCreateTransaction(common, { recentBlockhash: blockhash });
+      }
+      if (cancelledRef.current) return;
+
+      // ---- 4. Waiting for wallet confirmation -----------------------------
+      setSubStatus("approve the transaction in your wallet");
+      setPhase("wallet");
+      transition(VanityState.LAUNCHING);
+      const raw = await signLaunch(tx, res.mint, { signTransaction });
+      if (cancelledRef.current) return;
+
+      // ---- 5. Launching (broadcast + confirm) ------------------------------
+      setPhase("submitting");
+      setSubStatus("broadcasting to the network…");
+      // From here the launch is committed: no cancel, no resubmit.
+      setSubmitted(true);
+      const sig = await submitLaunch(raw, connection);
+      sentAtRef.current = Date.now();
       setSignature(sig);
+      setSubStatus("waiting for on-chain confirmation…");
       transition(VanityState.CONFIRMING);
       await confirmLaunch(connection, sig);
-      await verifyLaunchOnChain(mint58, sig);
-      transition(VanityState.SUCCESS);
-      setStep(6);
 
-      setBackendStatus("recording…");
-      try {
-        const r = await fetch("/api/launches", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            mint: mint58,
-            signature: sig,
-            name: info.name.trim(),
-            symbol: info.symbol.trim().toUpperCase(),
-            creator: publicKey.toBase58(),
-            network: getNetwork(),
-          }),
-        });
-        const d = await r.json();
-        setBackendStatus(d.ok ? "verified & recorded" : `not recorded: ${d.error}`);
-      } catch (e: any) {
-        setBackendStatus(`record failed: ${String(e?.message || e)}`);
+      // ---- 6. Verified on-chain -------------------------------------------
+      setSubStatus("verifying the launch on-chain…");
+      await verifyLaunchOnChain(res.address, sig);
+
+      let devResult: DevBuyResultView = {
+        enabled: devBuyEnabled, solSpentSol: null, tokensReceived: null,
+      };
+      if (devBuyEnabled) {
+        const vdb = await verifyDevBuyOnChain(res.address, publicKey.toBase58(), sig);
+        devResult = {
+          enabled: true,
+          solSpentSol: vdb.solSpentLamports != null ? formatSol(vdb.solSpentLamports) : null,
+          tokensReceived:
+            vdb.tokensReceived != null
+              ? vdb.tokensReceived.toLocaleString("en-US", { maximumFractionDigits: 2 })
+              : null,
+        };
       }
-    } catch (e: any) {
-      transition(VanityState.FAILED);
-      setError(String(e?.message || e));
+      setDevBuyResult(devResult);
+      transition(VanityState.SUCCESS);
+      setPhase("success");
+
+      // Best-effort backend recording AFTER verified success (non-blocking).
+      void fetch("/api/launches", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mint: res.address,
+          signature: sig,
+          name: info.name.trim(),
+          symbol: info.symbol.trim().toUpperCase(),
+          creator: publicKey.toBase58(),
+          network: getNetwork(),
+        }),
+      }).catch(() => undefined);
+    } catch (e: unknown) {
+      if (cancelledRef.current) return;
+      const msg = e instanceof Error ? e.message : String(e);
+      if (submitted) {
+        // Post-submission: outcome undetermined — monitoring only, never retry.
+        setError(`launch could not be verified: ${msg}`);
+        setPhase("submitting");
+      } else {
+        transition(VanityState.FAILED);
+        setError(msg);
+        // Stay on the failing stage; "Try again" restarts the flow.
+      }
     } finally {
-      setSubmitting(false);
+      runningRef.current = false;
     }
-  }, [publicKey, signTransaction, mintKeypair, mint58, connection, info, transition]);
+  }, [
+    connected, publicKey, signTransaction, connection, info,
+    devBuyEnabled, devBuySol, balanceLamports, transition, submitted,
+  ]);
+
+  const cancelLaunch = useCallback(() => {
+    cancelledRef.current = true;
+    grinder.current.cancel();
+    try {
+      transition(VanityState.CANCELLED);
+      transition(VanityState.IDLE);
+    } catch {
+      machine.current = new VanityMachine();
+    }
+    setPhase("idle");
+    setError("Launch cancelled — nothing was submitted.");
+  }, [transition]);
+
+  const retryLaunch = useCallback(() => {
+    try {
+      if (machine.current.state !== VanityState.IDLE) transition(VanityState.IDLE);
+    } catch {
+      machine.current = new VanityMachine();
+    }
+    setPhase("idle");
+    setError(null);
+    void launch();
+  }, [launch, transition]);
+
+  /**
+   * Verification-only recheck after broadcast. NEVER resubmits — the signed
+   * payload is not even kept. If the transaction was never accepted by the
+   * network (e.g. the RPC dropped the send) and enough time has passed, the
+   * flow is explicitly reset to a safe retry.
+   */
+  const recheckLaunch = useCallback(async () => {
+    if (!signature) return;
+    setRechecking(true);
+    setError(null);
+    try {
+      const status = await connection.getSignatureStatuses([signature]);
+      const s = status.value[0];
+      if (!s) {
+        const waited = sentAtRef.current != null && Date.now() - sentAtRef.current > 30_000;
+        if (waited) {
+          setSubmitted(false);
+          setError("the transaction was never accepted by the network — safe to try again");
+        } else {
+          setError("not confirmed yet — still processing, check again shortly");
+        }
+        return;
+      }
+      if (s.err) {
+        setError(`the transaction failed on-chain: ${JSON.stringify(s.err)}`);
+        return;
+      }
+      if (s.confirmationStatus !== "confirmed" && s.confirmationStatus !== "finalized") {
+        setError("still processing — check again shortly");
+        return;
+      }
+      await verifyLaunchOnChain(mint58 ?? "", signature);
+      transition(VanityState.CONFIRMING);
+      transition(VanityState.SUCCESS);
+      setPhase("success");
+      void refreshBalance();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      // Distinguish "not found yet" from a hard failure.
+      if (msg.includes("not found") || msg.includes("404")) {
+        setError("not confirmed yet — still processing, check again shortly");
+      } else {
+        setError(`verification failed: ${msg}`);
+      }
+    } finally {
+      setRechecking(false);
+    }
+  }, [signature, connection, mint58, transition, refreshBalance]);
 
   const reset = useCallback(() => {
     machine.current = new VanityMachine();
     grinder.current.terminate();
-    setState(VanityState.IDLE);
+    cancelledRef.current = false;
+    runningRef.current = false;
+    sentAtRef.current = null;
+    globalCache.current = null;
+    setPhase("idle");
+    setSubStatus(null);
+    setGrind({ attempts: 0, aps: 0, elapsed: 0 });
     setMint58(null);
-    setMintKeypair(null);
     setSignature(null);
     setError(null);
-    setBackendStatus(null);
-    setProgress({ attempts: 0, aps: 0, elapsed: 0 });
-    setInfo(EMPTY_INFO);
-    setStep(0);
+    setSubmitted(false);
+    setDevBuyResult({ enabled: false, solSpentSol: null, tokensReceived: null });
+    setInfoState(EMPTY_INFO);
   }, []);
 
-  const eta = useMemo(() => {
-    const estimate = Math.pow(58, MANDATORY_SUFFIX.length);
-    return progress.aps > 0 ? Math.round(estimate / progress.aps) : null;
-  }, [progress.aps]);
+  const clusterQuery = getNetwork() === "mainnet-beta" ? "" : "?cluster=devnet";
+  const launchReady = connected && isInfoValid(info) && devBuyValidation.ok;
 
+  // ---- Render ----------------------------------------------------------------
+  if (phase === "success" && mint58) {
+    return (
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <SuccessScreen
+          name={info.name.trim()}
+          symbol={info.symbol.trim().toUpperCase()}
+          mint58={mint58}
+          creator58={publicKey?.toBase58() ?? null}
+          signature={signature}
+          devBuy={devBuyResult}
+          clusterQuery={clusterQuery}
+          onReset={reset}
+        />
+      </div>
+    );
+  }
+
+  if (phase !== "idle") {
+    return (
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <LaunchProgress
+          phase={phase}
+          subStatus={subStatus}
+          grind={grind}
+          error={error}
+          submitted={submitted}
+          signature={signature}
+          clusterQuery={clusterQuery}
+          onCancel={cancelLaunch}
+          onRetry={retryLaunch}
+          onRecheck={() => void recheckLaunch()}
+          rechecking={rechecking}
+        />
+        <div className="self-start space-y-4 lg:sticky lg:top-24">
+          <div className="glass rounded-2xl p-5">
+            <div className="flex items-center justify-between">
+              <h3 className="font-mono text-[12px] uppercase tracking-wider text-faint">Live preview</h3>
+            </div>
+            <div className="mt-4 grid size-16 place-items-center rounded-2xl bg-acid/15 font-display text-2xl font-bold text-acid">
+              {(info.symbol || "SP").slice(0, 2)}
+            </div>
+            <div className="mt-3 font-display text-lg font-bold">{info.name || "Token name"}</div>
+            <div className="font-mono text-[13px] text-muted">${info.symbol || "TICKER"}</div>
+            <div className="mt-4 space-y-1.5 font-mono text-[12px]">
+              <div className="flex justify-between">
+                <span className="text-faint">mint</span>
+                <span className="text-faint">generating…</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-faint">network</span>
+                <span>Solana {getNetwork()}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-faint">dev buy</span>
+                <span className="text-ink">{devBuyEnabled ? `${devBuySol} SOL` : "off"}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- Single-page launch form ------------------------------------------------
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-4">
-        <div className="glass rounded-2xl px-5 py-4 overflow-x-auto">
-          <div className="flex min-w-max items-center gap-2 pb-1">
-            {STEP_LABELS.map((label, i) => (
-              <div key={label} className="flex items-center gap-2">
-                <StepBadge n={i + 1} done={i < step} active={i === step} />
-                <span className={`whitespace-nowrap font-mono text-[12px] ${i === step ? "text-ink" : "text-faint"}`}>
-                  {label}
-                </span>
-                {i < STEP_LABELS.length - 1 && <span className="text-faint">→</span>}
-              </div>
-            ))}
+        <StepInfoForm info={info} setInfo={setInfo} connected={connected} />
+
+        <DevBuyPanel
+          enabled={devBuyEnabled}
+          onToggle={setDevBuyEnabled}
+          amountSol={devBuySol}
+          onSelectPreset={setDevBuySol}
+          onCustomChange={setDevBuySol}
+          wallet58={publicKey?.toBase58() ?? null}
+          balanceLamports={balanceLamports}
+          estimateTokens={estimate.tokens}
+          estimateLoading={estimate.loading}
+          estimateError={estimate.error}
+          validationError={devBuyEnabled && !devBuyValidation.ok ? devBuyValidation.error ?? null : null}
+          onRefreshBalance={() => void refreshBalance()}
+          disabled={inFlight}
+        />
+
+        {/* Launch */}
+        <div className="glass rounded-2xl p-6 space-y-3">
+          <h2 className="font-display text-lg font-bold">03 · Launch</h2>
+          <p className="text-[13px] leading-relaxed text-muted">
+            One click does everything: SpawnPad quietly generates your{" "}
+            <span className="font-mono font-semibold text-acid">{MANDATORY_SUFFIX}</span> mint in
+            the background, pins the metadata, builds the official pump.fun
+            {devBuyEnabled ? " create + buy" : ""} transaction and asks you to approve it.
+            Your keys never leave this device.
+          </p>
+          {!connected && (
+            <p className="text-[12.5px] text-warn">Connect your wallet to launch.</p>
+          )}
+          {connected && !isInfoValid(info) && (
+            <p className="text-[12.5px] text-warn">
+              Add a name, symbol and an uploaded image to enable launch.
+            </p>
+          )}
+          {devBuyEnabled && !devBuyValidation.ok && (
+            <p className="text-[12.5px] text-crimson">{devBuyValidation.error}</p>
+          )}
+          {error && <ErrorLine text={error} />}
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              onClick={() => void launch()}
+              disabled={!launchReady || inFlight}
+              className="rounded-full bg-acid px-8 py-3 font-mono text-[14px] font-bold text-obsidian shadow-glow transition-colors hover:bg-[#7DF0FF] disabled:bg-raised/60 disabled:text-faint disabled:shadow-none"
+            >
+              Launch Token →
+            </button>
+            {devBuyEnabled && (
+              <span className="font-mono text-[12px] text-faint">
+                dev buy {devBuySol} SOL + ≈ {formatSol(estimateDevBuyTotals(devBuySol).overheadLamports)} SOL
+                fees · total ≈ {formatSol(estimateDevBuyTotals(devBuySol).totalLamports)} SOL
+              </span>
+            )}
           </div>
         </div>
-
-        <AnimatePresence mode="wait">
-          {step === 0 && (
-            <motion.div key="s1" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <StepInfoForm info={info} setInfo={setInfo} connected={connected} onContinue={() => setStep(1)} />
-            </motion.div>
-          )}
-          {step === 1 && (
-            <motion.div key="s2" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <StepVanity
-                state={state}
-                workerCount={workerCount}
-                setWorkerCount={setWorkerCount}
-                progress={progress}
-                mint58={mint58}
-                error={error}
-                onStart={startGrind}
-                onCancel={cancelGrind}
-                onContinue={() => setStep(2)}
-              />
-            </motion.div>
-          )}
-          {step === 2 && mint58 && (
-            <motion.div key="s3" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <StepValidate mint58={mint58} onContinue={() => setStep(3)} />
-            </motion.div>
-          )}
-          {step === 3 && (
-            <motion.div key="s4" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <StepConfigure onContinue={() => setStep(4)} />
-            </motion.div>
-          )}
-          {step === 4 && mint58 && (
-            <motion.div key="s5" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <StepReview
-                name={info.name}
-                symbol={info.symbol}
-                mint58={mint58}
-                wallet58={publicKey?.toBase58() ?? null}
-                onBack={() => setStep(3)}
-                onApprove={() => setStep(5)}
-              />
-            </motion.div>
-          )}
-          {step === 5 && (
-            <motion.div key="s6" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}>
-              <StepExecute
-                state={state}
-                submitting={submitting}
-                signature={signature}
-                error={error}
-                onSubmit={executeLaunch}
-                onBack={() => setStep(4)}
-              />
-            </motion.div>
-          )}
-          {step === 6 && mint58 && (
-            <motion.div key="s7" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}>
-              <StepSuccess
-                name={info.name}
-                symbol={info.symbol}
-                mint58={mint58}
-                signature={signature}
-                backendStatus={backendStatus}
-                onReset={reset}
-              />
-            </motion.div>
-          )}
-        </AnimatePresence>
       </div>
 
       {/* Live preview */}
@@ -307,7 +547,6 @@ export function LaunchWizard() {
         <div className="glass rounded-2xl p-5">
           <div className="flex items-center justify-between">
             <h3 className="font-mono text-[12px] uppercase tracking-wider text-faint">Live preview</h3>
-            <StatePill state={state} compact />
           </div>
           <div className="mt-4 grid size-16 place-items-center rounded-2xl bg-acid/15 font-display text-2xl font-bold text-acid">
             {(info.symbol || "SP").slice(0, 2)}
@@ -318,9 +557,7 @@ export function LaunchWizard() {
           <div className="mt-4 space-y-1.5 font-mono text-[12px]">
             <div className="flex justify-between gap-2">
               <span className="text-faint">mint</span>
-              <span className={mint58 ? "text-acid" : "text-faint"}>
-                {mint58 ? `${mint58.slice(0, 6)}…${mint58.slice(-6)}` : "not generated"}
-              </span>
+              <span className="text-acid">ends in {MANDATORY_SUFFIX}</span>
             </div>
             <div className="flex justify-between"><span className="text-faint">network</span><span>Solana {getNetwork()}</span></div>
             <div className="flex justify-between gap-2">
@@ -329,14 +566,14 @@ export function LaunchWizard() {
                 {publicKey ? `${publicKey.toBase58().slice(0, 4)}…${publicKey.toBase58().slice(-4)}` : "connect wallet"}
               </span>
             </div>
+            <div className="flex justify-between">
+              <span className="text-faint">dev buy</span>
+              <span className="text-ink">{devBuyEnabled ? `${devBuySol} SOL` : "off"}</span>
+            </div>
           </div>
         </div>
-        {eta !== null && state === VanityState.GENERATING && (
-          <div className="glass rounded-2xl p-4 font-mono text-[12px] text-muted">
-            grinding est. remaining ≈ {eta}s — rough estimate, not a guarantee
-          </div>
-        )}
       </div>
     </div>
   );
 }
+
