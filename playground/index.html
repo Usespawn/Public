@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Spawnpad — local playground</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+         background: #0b0e14; color: #e6e9f0; min-height: 100vh; }
+  header { padding: 20px 28px; border-bottom: 1px solid #1c2230;
+           display: flex; align-items: baseline; gap: 14px; }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: 0.5px; }
+  header h1 span { color: #7c5cff; }
+  header .sub { color: #8b93a7; font-size: 13px; }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 20px 60px; }
+  .card { background: #11151f; border: 1px solid #1c2230; border-radius: 12px;
+          padding: 18px 20px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; color: #aab3c5; text-transform: uppercase;
+             letter-spacing: 1px; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  input, select { background: #0b0e14; border: 1px solid #2a3145; color: #e6e9f0;
+                  border-radius: 8px; padding: 9px 12px; font-size: 14px; min-width: 160px; }
+  input:focus { outline: none; border-color: #7c5cff; }
+  button { background: #7c5cff; border: 0; color: white; font-weight: 600;
+           border-radius: 8px; padding: 10px 16px; font-size: 14px; cursor: pointer; }
+  button:hover { background: #8f73ff; }
+  button:disabled { background: #2a3145; color: #8b93a7; cursor: not-allowed; }
+  button.ghost { background: transparent; border: 1px solid #2a3145; color: #aab3c5; }
+  button.ghost:hover { border-color: #7c5cff; color: #e6e9f0; }
+  .muted { color: #8b93a7; font-size: 13px; }
+  .mono { font-family: ui-monospace, Consolas, monospace; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1c2230; }
+  th { color: #8b93a7; font-weight: 500; }
+  td.num { font-family: ui-monospace, Consolas, monospace; }
+  #log { background: #07090d; border: 1px solid #1c2230; border-radius: 12px;
+         padding: 14px 16px; height: 240px; overflow-y: auto; font-size: 12.5px;
+         font-family: ui-monospace, Consolas, monospace; line-height: 1.55; }
+  .ok { color: #4ade80; } .err { color: #f87171; } .dim { color: #8b93a7; }
+  .badge { display: inline-block; background: #1d2436; border-radius: 999px;
+           padding: 2px 10px; font-size: 12px; color: #aab3c5; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>spawn<span>pad</span></h1>
+  <span class="badge">local playground</span>
+  <span class="sub">every mint ends in <b class="mono" style="color:#7c5cff">Spw</b></span>
+</header>
+<main>
+  <div class="card">
+    <h2>Wallet</h2>
+    <div class="row">
+      <button id="btn-balance">Refresh balance</button>
+      <span class="mono" id="wallet"></span>
+      <span class="mono ok" id="balance"></span>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h2>1 · Launch a token</h2>
+      <div class="row">
+        <input id="t-name" placeholder="Token name" value="Spawn Token" />
+        <input id="t-symbol" placeholder="Symbol" value="SPWN" maxlength="8" />
+      </div>
+      <div class="row" style="margin-top:10px">
+        <button id="btn-launch">Grind Spw mint &amp; launch</button>
+        <span class="muted" id="grind-info"></span>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>2 · Trade</h2>
+      <div class="row">
+        <select id="mint-select"></select>
+        <button id="btn-refresh" class="ghost">Load curve</button>
+      </div>
+      <div class="row" style="margin-top:10px">
+        <input id="buy-sol" type="number" step="0.01" value="0.1" style="width:90px" /> SOL
+        <button id="btn-buy">Buy</button>
+        <button id="btn-sell">Sell 25%</button>
+        <button id="btn-migrate" class="ghost">Migrate</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Curve state</h2>
+    <table id="state-table">
+      <tr><th>Virtual SOL</th><th>Virtual tokens</th><th>Real SOL</th><th>Real tokens</th><th>My tokens</th><th>Complete</th></tr>
+      <tr id="state-row"><td colspan="6" class="muted">— select a token and press Load curve —</td></tr>
+    </table>
+  </div>
+
+  <div id="log"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (msg, cls = "") => {
+  const d = document.createElement("div");
+  d.className = cls;
+  d.textContent = msg;
+  $("log").appendChild(d);
+  $("log").scrollTop = 1e9;
+};
+const fmt = (n) => Number(n).toLocaleString();
+
+async function api(path, body) {
+  const opts = body !== undefined
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
+    : {};
+  const r = await fetch(path, opts);
+  const data = await r.json();
+  if (!data.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+async function refreshBalance() {
+  try {
+    const d = await api("/api/balance");
+    $("wallet").textContent = d.wallet.slice(0, 6) + "…" + d.wallet.slice(-6);
+    $("balance").textContent = (d.balance / 1e9).toFixed(3) + " SOL";
+    log(`wallet balance: ${(d.balance / 1e9).toFixed(9)} SOL`, "dim");
+  } catch (e) { log("balance failed: " + e.message, "err"); }
+}
+
+async function refreshMints() {
+  try {
+    const d = await api("/api/mints");
+    const sel = $("mint-select");
+    sel.innerHTML = "";
+    if (!d.launches.length) {
+      sel.innerHTML = '<option value="">— no tokens launched yet —</option>';
+      return;
+    }
+    for (const l of d.launches) {
+      const o = document.createElement("option");
+      o.value = l.mint;
+      o.textContent = l.symbol + " — " + l.mint.slice(0, 8) + "…" + l.mint.slice(-6);
+      sel.appendChild(o);
+    }
+  } catch (e) { log("mints failed: " + e.message, "err"); }
+}
+
+async function loadCurve() {
+  const mint = $("mint-select").value;
+  if (!mint) { log("no token selected", "err"); return; }
+  try {
+    const d = await api("/api/curve/" + mint);
+    $("state-row").innerHTML =
+      '<td class="num">' + (Number(d.virtualSolReserves) / 1e9).toFixed(3) + ' SOL</td>' +
+      '<td class="num">' + fmt(d.virtualTokenReserves) + '</td>' +
+      '<td class="num">' + (Number(d.realSolReserves) / 1e9).toFixed(3) + ' SOL</td>' +
+      '<td class="num">' + fmt(d.realTokenReserves) + '</td>' +
+      '<td class="num">' + fmt(d.myTokens) + '</td>' +
+      '<td>' + (d.complete ? "graduated" : "—") + '</td>';
+    log(`curve ${mint.slice(0, 8)}…: realSOL=${(Number(d.realSolReserves) / 1e9).toFixed(4)} complete=${d.complete}`, "dim");
+  } catch (e) { log("curve load failed: " + e.message, "err"); }
+}
+
+$("btn-balance").onclick = refreshBalance;
+$("btn-refresh").onclick = loadCurve;
+$("mint-select").onchange = loadCurve;
+
+$("btn-launch").onclick = async () => {
+  const btn = $("btn-launch");
+  btn.disabled = true;
+  $("grind-info").textContent = "grinding vanity mint…";
+  log("grinding a …Spw mint keypair…", "dim");
+  try {
+    const g = await api("/api/grind", {});
+    log(`grinded ${g.publicKey} — ${fmt(g.attempts)} attempts in ${(g.elapsedMs / 1000).toFixed(1)}s`, "ok");
+    $("grind-info").textContent = "mint ready";
+    await api("/api/init", {});
+    log("launching on the curve…", "dim");
+    const c = await api("/api/create", {
+      secretKey: g.secretKey,
+      name: $("t-name").value || "Spawn Token",
+      symbol: $("t-symbol").value || "SPWN",
+    });
+    log("launched! mint = " + c.mint, "ok");
+    await refreshMints();
+    await loadCurve();
+  } catch (e) {
+    log("launch failed: " + e.message, "err");
+    $("grind-info").textContent = "";
+  }
+  btn.disabled = false;
+};
+
+$("btn-buy").onclick = async () => {
+  const mint = $("mint-select").value;
+  if (!mint) { log("no token selected", "err"); return; }
+  const sol = Number($("buy-sol").value || 0);
+  if (sol <= 0) { log("enter a SOL amount", "err"); return; }
+  log(`buying with ${sol} SOL…`, "dim");
+  try {
+    await api("/api/buy", { mint, sol });
+    log(`bought with ${sol} SOL`, "ok");
+    await loadCurve();
+    await refreshBalance();
+  } catch (e) { log("buy failed: " + e.message, "err"); }
+};
+
+$("btn-sell").onclick = async () => {
+  const mint = $("mint-select").value;
+  if (!mint) { log("no token selected", "err"); return; }
+  log("selling 25% of holdings…", "dim");
+  try {
+    await api("/api/sell", { mint, pct: 25 });
+    log("sold 25%", "ok");
+    await loadCurve();
+    await refreshBalance();
+  } catch (e) { log("sell failed: " + e.message, "err"); }
+};
+
+$("btn-migrate").onclick = async () => {
+  const mint = $("mint-select").value;
+  if (!mint) { log("no token selected", "err"); return; }
+  log("migrating graduated curve…", "dim");
+  try {
+    await api("/api/migrate", { mint });
+    log("migrated — liquidity locked, mint authority burned", "ok");
+    await loadCurve();
+  } catch (e) { log("migrate failed: " + e.message, "err"); }
+};
+
+refreshBalance();
+refreshMints();
+log("Spawnpad playground ready — all actions hit your localnet validator at 127.0.0.1:8899", "dim");
+</script>
+</body>
+</html>
+

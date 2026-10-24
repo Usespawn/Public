@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SpawnPad campaign banners — renderer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;600&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --obsidian:#0B1124; --line:#293B60; --ink:#F4F7FF; --muted:#A6B5D4; --faint:#7484A6;
+    --acid:#42E8FF; --violet:#9670FF; --ok:#50E3A4;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:#02060F;display:grid;place-items:center;min-height:100vh;font-family:Inter,sans-serif}
+  #stage{
+    width:1600px;height:900px;position:relative;overflow:hidden;
+    background:
+      radial-gradient(900px 620px at 82% 18%, rgba(150,112,255,.16), transparent 60%),
+      radial-gradient(760px 540px at 12% 85%, rgba(66,232,255,.13), transparent 60%),
+      radial-gradient(1100px 800px at 50% 50%, #0E1730 0%, #0B1124 70%);
+    color:#F4F7FF;
+  }
+  #stage::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+    background:
+      repeating-linear-gradient(0deg, rgba(41,59,96,.16) 0 1px, transparent 1px 64px),
+      repeating-linear-gradient(90deg, rgba(41,59,96,.16) 0 1px, transparent 1px 64px);}
+  #stage::after{content:"";position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(1200px 800px at 50% 45%, transparent 55%, rgba(2,6,15,.55) 100%);}
+  .frame{position:absolute;inset:0;padding:72px 88px;display:flex;flex-direction:column;z-index:2}
+  .topbar{display:flex;align-items:center;justify-content:space-between}
+  .wordmark{height:46px}
+  .kicker{font-family:"JetBrains Mono",monospace;font-size:15px;letter-spacing:.34em;color:#7484A6;text-transform:uppercase}
+  .footer{margin-top:auto;display:flex;justify-content:space-between;align-items:center;
+    font-family:"JetBrains Mono",monospace;font-size:14px;letter-spacing:.22em;color:#7484A6;text-transform:uppercase}
+  .footer .dot{color:#42E8FF}
+  .headline{font-family:"Space Grotesk",sans-serif;font-weight:700;line-height:.98;letter-spacing:-.02em}
+  .sub{font-family:Inter,sans-serif;font-size:26px;line-height:1.5;color:#A6B5D4}
+  .accent{background:linear-gradient(90deg,#42E8FF,#9670FF);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .ghost{position:absolute;font-family:"Space Grotesk",sans-serif;font-weight:700;
+    color:transparent;-webkit-text-stroke:1.5px rgba(66,232,255,.10);z-index:1;user-select:none}
+  .card{border:1px solid #293B60;border-radius:18px;background:linear-gradient(180deg,rgba(21,33,63,.72),rgba(16,26,53,.72));padding:22px 26px}
+  .mono{font-family:"JetBrains Mono",monospace}
+  .acid{color:#42E8FF} .violettx{color:#9670FF} .oktx{color:#50E3A4} .fainttx{color:#7484A6} .mutedtx{color:#A6B5D4}
+  .h-glow{text-shadow:0 0 42px rgba(66,232,255,.35)}
+  .addressbar{display:inline-flex;align-items:center;border:1px solid #293B60;border-radius:14px;
+    background:#0A1226;padding:20px 28px;font-family:"JetBrains Mono",monospace;font-size:30px;white-space:nowrap}
+  .addressbar .suffix{background:rgba(66,232,255,.16);color:#42E8FF;padding:4px 12px;border-radius:8px;font-weight:700;margin-left:6px}
+  .demo-note{font-family:"JetBrains Mono",monospace;font-size:15px;color:#7484A6;letter-spacing:.12em}
+  .steprow{display:flex;align-items:baseline;gap:18px;font-size:24px;color:#F4F7FF}
+  .stepnum{font-family:"JetBrains Mono",monospace;color:#42E8FF;font-size:20px;font-weight:700}
+  .checkline{display:flex;align-items:center;gap:14px;font-size:24px;color:#F4F7FF}
+  .checkmark{color:#50E3A4;font-family:"JetBrains Mono",monospace;font-weight:700}
+  .terminal{border:1px solid #293B60;border-radius:16px;background:#081020;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.45)}
+  .terminal .tbar{display:flex;gap:8px;padding:14px 18px;border-bottom:1px solid #293B60}
+  .terminal .tbar i{width:12px;height:12px;border-radius:50%;display:block}
+  .terminal .tbody{padding:24px 28px;font-family:"JetBrains Mono",monospace;font-size:21px;line-height:1.75;color:#A6B5D4}
+  .ring{position:absolute;border-radius:50%;border:1px solid rgba(66,232,255,.18)}
+  .ring.v{border-color:rgba(150,112,255,.16)}
+  .node{position:absolute;width:10px;height:10px;border-radius:50%;background:#42E8FF;box-shadow:0 0 18px rgba(66,232,255,.8)}
+  .node.v{background:#9670FF;box-shadow:0 0 18px rgba(150,112,255,.8)}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+const ASSETS = "../../../web/public/brand/";
+const DEMO_ADDR = "F1KyPXgyxjYayBTpNYCVUhwhaf99QNq2jrhdR1qCJSpw";
+const stage = document.getElementById("stage");
+function chrome(inner, opts = {}) {
+  return `<div class="frame">
+      <div class="topbar">
+        <img class="wordmark" src="${ASSETS}spawnpad-logo-dark.svg" alt="SpawnPad">
+        <div class="kicker">${opts.kicker || "SpawnPad // Solana Launch System"}</div>
+      </div>
+      ${inner}
+      <div class="footer">
+        <span>every token has an origin <span class="dot">●</span> make yours SpawnPad</span>
+        <span>x.com/spawnpadHQ <span class="dot">●</span> github.com/Usespawn</span>
+      </div>
+    </div>`;
+}
+function ghost(n, size = 560, top = -120, right = -40) {
+  return `<div class="ghost" style="font-size:${size}px;right:${right}px;top:${top}px">${n}</div>`;
+}
+function rings(cx, cy, sizes, cls = "") {
+  return sizes.map((s) =>
+    `<div class="ring ${cls}" style="left:${cx - s / 2}px;top:${cy - s / 2}px;width:${s}px;height:${s}px"></div>`).join("");
+}
+function nodes(list) {
+  return list.map(([x, y, v]) => `<div class="node ${v ? "v" : ""}" style="left:${x}px;top:${y}px"></div>`).join("");
+}
+function addressBar(addr, opts = {}) {
+  const base = addr.slice(0, -3), sfx = addr.slice(-3);
+  const cut = opts.cut ? base.slice(0, 14) + "…" + base.slice(-10) : base;
+  return `<div class="addressbar" style="font-size:${opts.size || 30}px">${cut}<span class="suffix">${sfx}</span></div>`;
+}
+const BANNERS = [
+  { file: "01-introducing-spawnpad.png", html: () => chrome(`
+      <div style="flex:1;display:grid;place-items:center;text-align:center">
+        <div>
+          <img src="${ASSETS}spawnpad-emblem-gradient.png" alt="" style="height:150px;margin-bottom:34px;filter:drop-shadow(0 0 46px rgba(66,232,255,.45))">
+          <div class="headline h-glow" style="font-size:104px">EVERY TOKEN<br>HAS AN <span class="accent">ORIGIN.</span></div>
+          <div class="mono" style="margin-top:30px;font-size:24px;letter-spacing:.42em;color:#42E8FF">MEET SPAWNPAD</div>
+        </div>
+      </div>`, { kicker: "Introducing // Solana Launch System" }) },
+  { file: "02-why-spawnpad.png", html: () => chrome(`
+      ${rings(1230, 430, [560, 400, 250])}
+      ${nodes([[1225, 145], [1425, 425, 1], [1225, 705]])}
+      <div style="flex:1;display:flex;align-items:center">
+        <div style="max-width:860px">
+          ${ghost("02", 520, -140, -30)}
+          <div class="headline" style="font-size:96px;margin-top:40px">GIVE YOUR TOKEN<br>AN <span class="accent">ORIGIN.</span></div>
+          <div class="sub" style="margin-top:30px;max-width:640px">Token creation on Solana is easy.<br>Being remembered isn't.</div>
+        </div>
+      </div>`, { kicker: "Why SpawnPad Exists" }) },
+  { file: "03-vanity-mint-spw.png", html: () => chrome(`
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        ${ghost("03", 500, -130, -30)}
+        <div class="headline" style="font-size:88px">YOUR MINT.<br><span class="accent">YOUR SIGNATURE.</span></div>
+        <div style="margin-top:44px">${addressBar(DEMO_ADDR, { size: 32 })}</div>
+        <div class="demo-note" style="margin-top:20px">DEMONSTRATION ADDRESS — NOT AN OFFICIAL TOKEN CA</div>
+      </div>`, { kicker: "Signature Feature // Vanity Mint" }) },
+  { file: "04-how-vanity-works.png", html: () => chrome(`
+      <div style="flex:1;display:grid;grid-template-columns:1.05fr 1fr;gap:70px;align-items:center">
+        <div><div class="headline" style="font-size:92px">SEARCH.<br>MATCH.<br><span class="accent">SPAWN.</span></div></div>
+        <div class="terminal">
+          <div class="tbar"><i style="background:#FF647C"></i><i style="background:#FFC857"></i><i style="background:#50E3A4"></i></div>
+          <div class="tbody">
+            <div><span class="acid">›</span> spawning workers… <span class="oktx">ok</span></div>
+            <div><span class="acid">›</span> keypair #37,118 <span class="fainttx">no match</span></div>
+            <div><span class="acid">›</span> keypair #37,119 <span class="fainttx">no match</span></div>
+            <div><span class="acid">›</span> keypair #37,120 …</div>
+            <div class="oktx">✓ suffix match: Spw</div>
+            <div class="fainttx" style="font-size:18px">mint keypair kept · stays in your browser</div>
+          </div>
+        </div>
+      </div>`, { kicker: "How the Vanity Generator Works" }) },
+  { file: "05-pumpfun-integration.png", html: () => chrome(`
+      <div style="flex:1;display:grid;place-items:center;text-align:center">
+        <div>
+          <div class="chip mono" style="font-size:18px;letter-spacing:.2em">OFFICIAL PUMP.FUN <span class="acid">CREATE_V2</span> PROGRAM</div>
+          <div class="headline" style="font-size:92px;margin-top:36px">ONE LAUNCHPAD.<br>A <span class="accent">DISTINCTIVE</span> MINT.</div>
+          <div class="sub" style="margin-top:30px">SpawnPad launches on the official bonding-curve engine.<br>Not affiliated — built on it.</div>
+        </div>
+      </div>`, { kicker: "Pump.fun Integration" }) },
+  { file: "06-user-benefits.png", html: () => chrome(`
+      ${ghost("06", 460, -150, -20)}
+      <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center">
+        <div><div class="headline" style="font-size:78px">BUILT FOR YOUR<br>TOKEN'S <span class="accent">FIRST STEP.</span></div></div>
+        <div style="display:flex;flex-direction:column;gap:20px">
+          ${["guided launch flow", "vanity mint ending in Spw", "image + metadata upload to IPFS", "Phantom & Solflare support", "Mainnet launch, verified on-chain"]
+            .map((t) => `<div class="checkline"><span class="checkmark">✓</span> ${t}</div>`).join("")}
+        </div>
+      </div>`, { kicker: "What Users Get" }) },
+  { file: "07-launch-flow.png", html: () => chrome(`
+      <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:70px;align-items:center">
+        <div>
+          <div class="headline" style="font-size:88px">FROM IDEA<br>TO <span class="accent">ON-CHAIN.</span></div>
+          <div class="sub" style="margin-top:26px;max-width:520px">Mainnet launches cost real SOL — and are irreversible.</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:16px">
+          ${["connect Phantom or Solflare", "enter token details", "upload your token image", "grind a Spw mint", "review everything", "approve in your wallet", "verified on-chain"]
+            .map((t, i) => `<div class="steprow"><span class="stepnum">0${i + 1}</span><span>${t}</span></div>`).join("")}
+        </div>
+      </div>`, { kicker: "The Launch Flow" }) },
+];
+BANNERS.push(
+  { file: "08-built-for-solana.png", html: () => chrome(`
+      <div style="flex:1;display:flex;align-items:center;justify-content:center;position:relative">
+        ${rings(800, 430, [720, 540, 380, 240, 130])}
+        ${rings(800, 430, [660], "v")}
+        ${nodes([[800, 70], [1140, 430, 1], [800, 790], [460, 430]])}
+        <div style="position:relative;text-align:center">
+          <div class="mono" style="letter-spacing:.4em;color:#42E8FF;font-size:16px">SOLANA · TOKEN-2022 · MAINNET</div>
+          <div class="headline h-glow" style="font-size:96px;margin-top:26px">BUILT AROUND <span class="accent">SOLANA.</span></div>
+        </div>
+      </div>`, { kicker: "The Network" }) },
+  { file: "09-token-identity.png", html: () => chrome(`
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        ${ghost("09", 480, -140, -30)}
+        <div class="headline" style="font-size:88px">MAKE THE MINT<br><span class="accent">MEMORABLE.</span></div>
+        <div style="margin-top:44px">${addressBar(DEMO_ADDR, { size: 34 })}</div>
+        <div class="demo-note" style="margin-top:20px">DEMONSTRATION ADDRESS — A SUFFIX IS BRANDING, NOT VERIFICATION</div>
+      </div>`, { kicker: "Your Token // Your Identity" }) },
+  { file: "10-under-the-hood.png", html: () => chrome(`
+      <div style="flex:1;display:grid;grid-template-columns:1fr 1.1fr;gap:60px;align-items:center">
+        <div><div class="headline" style="font-size:80px">MORE THAN A<br><span class="accent">PRETTY INTERFACE.</span></div></div>
+        <div class="card mono" style="font-size:20px;line-height:2">
+          <div><span class="acid">›</span> Web Worker keypair generation</div>
+          <div><span class="acid">›</span> exact suffix validation ×2</div>
+          <div><span class="acid">›</span> metadata → IPFS (public)</div>
+          <div><span class="acid">›</span> wallet signing (Phantom / Solflare)</div>
+          <div><span class="acid">›</span> confirmation polling</div>
+          <div><span class="oktx">✓</span> on-chain verification</div>
+        </div>
+      </div>`, { kicker: "Under the Hood" }) },
+  { file: "11-launch-transparency.png", html: () => chrome(`
+      ${ghost("11", 440, -150, -20)}
+      <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+        <div class="headline" style="font-size:86px">REVIEW FIRST.<br><span class="accent">SIGN WITH INTENTION.</span></div>
+        <div class="sub" style="margin-top:28px;max-width:900px">Token details, mint address, fees, rent — on screen before you sign.<br>
+        Launching is irreversible: the mint and bonding curve live forever.</div>
+      </div>`, { kicker: "Transparency Before Launch" }) },
+  { file: "12-whats-next.png", html: () => chrome(`
+      <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center">
+        <div><div class="headline" style="font-size:80px">THE NEXT PHASE<br><span class="accent">STARTS HERE.</span></div></div>
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div class="mono" style="letter-spacing:.3em;color:#7484A6;font-size:15px">NEXT</div>
+          ${["richer launch-status feedback", "better launch history + discovery", "clearer transaction-cost display", "more automated tests"]
+            .map((t) => `<div class="steprow"><span class="stepnum">→</span><span>${t}</span></div>`).join("")}
+          <div class="mono" style="letter-spacing:.3em;color:#7484A6;font-size:15px;margin-top:8px">NOW</div>
+          <div class="mutedtx" style="font-size:21px">full launch flow · vanity engine · IPFS uploads · Mainnet</div>
+        </div>
+      </div>`, { kicker: "Roadmap // Plans in Motion" }) },
+);
+BANNERS.push(
+  { file: "13-building-in-public.png", html: () => chrome(`
+      <div style="flex:1;display:grid;place-items:center;text-align:center">
+        <div>
+          <div class="mono" style="font-size:24px;letter-spacing:.16em">
+            <span class="acid">BUILD</span> <span class="fainttx">/</span> <span class="violettx">TEST</span> <span class="fainttx">/</span> <span class="oktx">IMPROVE</span> <span class="fainttx">/</span> <span style="color:#F4F7FF">REPEAT.</span>
+          </div>
+          <div class="mono" style="margin-top:42px;display:flex;gap:24px;justify-content:center">
+            <span class="card"><span class="oktx">✓</span> 34 automated tests green</span>
+            <span class="card"><span class="oktx">✓</span> production build passing</span>
+          </div>
+          <div class="mono" style="margin-top:36px;font-size:19px;color:#A6B5D4">every claim checked against the repo · github.com/Usespawn</div>
+        </div>
+      </div>`, { kicker: "Building in Public" }) },
+  { file: "14-community-invitation.png", html: () => chrome(`
+      <div style="flex:1;display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center">
+        <div>
+          <div class="headline" style="font-size:86px">BE PART OF<br>THE <span class="accent">ORIGIN.</span></div>
+          <div class="sub" style="margin-top:26px;max-width:560px">SpawnPad is early — and early users shape what gets built next.</div>
+        </div>
+        <div class="card" style="padding:34px 38px">
+          <div class="mono" style="font-size:23px"><span class="acid">𝕏</span> &nbsp;x.com/spawnpadHQ</div>
+          <div class="mono" style="font-size:23px;margin-top:22px"><span class="violettx">◈</span> &nbsp;github.com/Usespawn</div>
+          <div class="mutedtx" style="font-family:Inter,sans-serif;font-size:19px;margin-top:26px">Follow for launch tools, dev updates,<br>and the road ahead.</div>
+        </div>
+      </div>`, { kicker: "Community Invitation" }) },
+  { file: "15-campaign-closer.png", html: () => chrome(`
+      <div style="flex:1;display:grid;place-items:center;text-align:center">
+        <div>
+          <img src="${ASSETS}spawnpad-emblem-gradient.png" alt="" style="height:130px;margin-bottom:36px;filter:drop-shadow(0 0 52px rgba(150,112,255,.5))">
+          <div class="headline" style="font-size:96px">EVERY TOKEN HAS AN <span class="accent">ORIGIN.</span></div>
+          <div class="mono" style="margin-top:30px;font-size:26px;letter-spacing:.36em;color:#F4F7FF">MAKE YOURS <span class="acid">SPAWNPAD.</span></div>
+        </div>
+      </div>`, { kicker: "The Vision // SpawnPad" }) }
+);
+const n = parseInt(new URLSearchParams(location.search).get("n") || "1", 10);
+if (n >= 1 && n <= BANNERS.length) {
+  stage.innerHTML = BANNERS[n - 1].html();
+} else if (n === 0) {
+  stage.innerHTML = `<div style="position:absolute;inset:0;display:grid;grid-template-columns:repeat(5,1fr);grid-template-rows:repeat(3,1fr);gap:6px;padding:6px;background:#050B14">
+    ${BANNERS.map((b, i) => `<div style="position:relative;overflow:hidden;border:1px solid #15213F;border-radius:6px">
+      <iframe src="?n=${i + 1}" style="width:1600px;height:900px;transform:scale(0.1985);transform-origin:0 0;border:0"></iframe>
+      <div style="position:absolute;left:8px;bottom:6px;font-family:'JetBrains Mono',monospace;font-size:16px;color:#42E8FF">${String(i + 1).padStart(2, "0")}</div>
+    </div>`).join("")}
+  </div>`;
+}
+window.BANNERS = BANNERS;
+window.BANNER_FILES = BANNERS.map((b) => b.file);
+</script>
+</body>
+</html>

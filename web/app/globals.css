@@ -1,0 +1,264 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  /* SpawnPad Universe tokens (CSS mirror of tailwind config) */
+  --sp-bg: #0b1124;
+  --sp-sea: #101a35;
+  --sp-panel: #15213f;
+  --sp-raised: #1a2b4d;
+  --sp-line: #293b60;
+  --sp-line-strong: #3a527b;
+  --sp-ink: #f4f7ff;
+  --sp-muted: #a6b5d4;
+  --sp-faint: #7484a6;
+  --sp-cyan: #42e8ff;
+  --sp-violet: #9670ff;
+  --sp-blue: #5885ff;
+  --sp-crimson: #ff537a;
+  --font-space-grotesk: 'Space Grotesk', 'Segoe UI', ui-sans-serif, sans-serif;
+  --font-inter: 'Inter', 'Segoe UI', ui-sans-serif, system-ui, sans-serif;
+  --font-jetbrains: 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+}
+
+html,
+body {
+  background: var(--sp-bg);
+}
+
+body {
+  @apply text-ink antialiased;
+}
+
+::selection {
+  background: rgba(66, 232, 255, 0.28);
+}
+
+/* Layered midnight-blue atmosphere: base gradients for page sections */
+.atmos {
+  background:
+    radial-gradient(900px 480px at 80% -8%, rgba(66, 232, 255, 0.07), transparent 62%),
+    radial-gradient(760px 420px at 6% 14%, rgba(150, 112, 255, 0.07), transparent 60%),
+    linear-gradient(180deg, #0b1124 0%, #0e1730 52%, #0b1124 100%);
+}
+
+/* Alternate section: slightly different navy + laser-blue wash */
+.atmos-alt {
+  background:
+    radial-gradient(820px 460px at 14% 0%, rgba(88, 133, 255, 0.08), transparent 62%),
+    radial-gradient(700px 420px at 88% 92%, rgba(150, 112, 255, 0.06), transparent 60%),
+    linear-gradient(180deg, #101a35 0%, #0b1124 100%);
+}
+
+/* Hero: cyan + violet illumination around the product area */
+.atmos-hero {
+  background:
+    radial-gradient(1050px 580px at 76% 4%, rgba(66, 232, 255, 0.1), transparent 62%),
+    radial-gradient(900px 540px at 4% 32%, rgba(150, 112, 255, 0.09), transparent 60%),
+    linear-gradient(180deg, #0b1124 0%, #101a35 78%, #0b1124 100%);
+}
+
+/* Subtle grid overlay, tinted navy, fading with depth */
+.grid-lines {
+  background-image:
+    linear-gradient(to right, rgba(120, 160, 235, 0.055) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(120, 160, 235, 0.055) 1px, transparent 1px);
+  background-size: 72px 72px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 70%, transparent 100%);
+  -webkit-mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.9) 0%, rgba(0, 0, 0, 0.35) 70%, transparent 100%);
+}
+
+/* Dot-matrix / halftone overlay — cyan-tinted */
+.dot-matrix {
+  background-image: radial-gradient(rgba(66, 232, 255, 0.045) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+
+.dot-matrix-fine {
+  background-image: radial-gradient(rgba(166, 181, 212, 0.05) 1px, transparent 1px);
+  background-size: 12px 12px;
+}
+
+/* Section label — small monospace technical tag */
+.tech-label {
+  @apply font-mono text-[11px] uppercase tracking-[0.18em] text-acid;
+}
+
+/* Form input (launch wizard + landing forms) */
+.input {
+  @apply w-full rounded-lg border border-line bg-raised/60 px-3 py-2 text-[14px] text-ink
+    placeholder:text-faint outline-none transition-colors;
+}
+.input:focus {
+  @apply border-acid/60 shadow-glow;
+}
+
+/* Glass panel primitive — navy glass */
+.glass {
+  @apply bg-panel/70 backdrop-blur-md border border-line;
+}
+
+/* Elevated surface panel */
+.surface {
+  @apply bg-panel border border-line;
+}
+
+/* Slim navy scrollbars */
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2b3c60;
+  border-radius: 8px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #3a527b;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Wallet adapter — navy pill + themed modal */
+.wallet-adapter-button {
+  @apply !rounded-full !font-mono !text-[13px] !tracking-wide
+    !border !border-line-strong !bg-raised/80 !text-ink
+    hover:!border-acid/50 hover:!text-acid !transition !h-9 !px-4;
+}
+.wallet-adapter-button:not([aria-disabled='true']):hover {
+  background-color: rgba(22, 33, 61, 0.9);
+}
+.wallet-adapter-modal-wrapper {
+  background: #15213f !important;
+  border: 1px solid #293b60 !important;
+}
+.wallet-adapter-modal-list-more {
+  color: #42e8ff !important;
+}
+
+/* ===== Digital Genesis — hero animation scene ===== */
+/* All motion is transform/opacity only (GPU-friendly). Base styles equal the
+   fully-lit static composition, so with animation disabled (reduced motion,
+   no-JS) the scene still renders correctly. */
+
+/* Circuit traces: pathLength=1 → dashoffset 1→0 draws in, 0→-1 flows through */
+.dg-draw {
+  stroke-dasharray: 1;
+  animation: dgDraw 8s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes dgDraw {
+  0% { stroke-dashoffset: 1; opacity: 0.25; }
+  16% { stroke-dashoffset: 0; opacity: 1; }
+  86% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: -1; opacity: 0.25; }
+}
+
+/* Contact pads flicker awake as their trace completes */
+.dg-pad {
+  animation: dgPad 8s ease-in-out infinite;
+}
+@keyframes dgPad {
+  0%, 20% { opacity: 0.25; }
+  24% { opacity: 1; }
+  70% { opacity: 0.85; }
+  88%, 100% { opacity: 0.25; }
+}
+
+/* Thin energy ring: expands outward and fades */
+.dg-ring {
+  animation: dgRing 8s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.dg-ring-b {
+  animation-delay: 3.6s;
+}
+@keyframes dgRing {
+  0%, 30% { opacity: 0; transform: scale(0.35); }
+  42% { opacity: 0.55; }
+  58% { opacity: 0; transform: scale(2.1); }
+  100% { opacity: 0; transform: scale(2.1); }
+}
+
+/* Genesis core: gradual illumination, gentle breathing, smooth return */
+.dg-core {
+  animation: dgCore 8s ease-in-out infinite;
+}
+@keyframes dgCore {
+  0% { opacity: 0.4; }
+  14% { opacity: 1; }
+  55% { opacity: 0.8; }
+  70% { opacity: 1; }
+  88% { opacity: 0.45; }
+  100% { opacity: 0.4; }
+}
+.dg-core-pulse {
+  animation: dgCorePulse 8s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes dgCorePulse {
+  0% { opacity: 0.75; transform: scale(0.92); }
+  14% { opacity: 1; transform: scale(1); }
+  55% { opacity: 0.85; transform: scale(0.98); }
+  70% { opacity: 1; transform: scale(1.05); }
+  88% { opacity: 0.75; transform: scale(0.94); }
+  100% { opacity: 0.75; transform: scale(0.92); }
+}
+
+/* Emblem highlight — restrained cyan→violet flash near sequence end */
+.dg-emblem-hi {
+  animation: dgEmblem 8s ease-in-out infinite;
+}
+@keyframes dgEmblem {
+  0%, 58% { opacity: 0; }
+  70% { opacity: 0.85; }
+  84%, 100% { opacity: 0; }
+}
+
+/* Traveling nodes visibility window (motion itself is SMIL animateMotion) */
+.dg-nodes {
+  animation: dgNodes 8s linear infinite;
+}
+@keyframes dgNodes {
+  0%, 22% { opacity: 0; }
+  30%, 86% { opacity: 1; }
+  96%, 100% { opacity: 0; }
+}
+
+/* Ultra-slow guide-ring rotation */
+.dg-spin {
+  animation: dgSpin 46s linear infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes dgSpin {
+  to { transform: rotate(360deg); }
+}
+
+/* Reduced motion: disable decorative animation */
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee,
+  .animate-blink,
+  .animate-orbit,
+  .animate-float-y,
+  .animate-scan,
+  .animate-twinkle,
+  .animate-revealChar,
+  .dg-draw,
+  .dg-pad,
+  .dg-ring,
+  .dg-ring-b,
+  .dg-core,
+  .dg-core-pulse,
+  .dg-emblem-hi,
+  .dg-nodes,
+  .dg-spin {
+    animation: none !important;
+  }
+  * {
+    scroll-behavior: auto !important;
+  }
+}

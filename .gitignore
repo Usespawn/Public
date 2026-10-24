@@ -1,0 +1,76 @@
+# ---- dependencies & build outputs ----
+node_modules/
+target/
+dist/
+build/
+.next/
+out/
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+.anchor/
+.ledger/
+
+# ---- environment & secrets (never commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+keypairs/*.json
+!keypairs/.gitkeep
+playground/fee-recipient.json
+
+# ---- logs ----
+*.log
+logs/
+
+# ---- OS / editor ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- local browser profiles & runtime data ----
+chrome-*/
+*.webdata
+*.localstorage
+web/.data/
+
+# ---- build sandbox / duplicate build tree ----
+build-isolate/
+
+# ---- session scratch files & audit outputs (not part of the project) ----
+_audit*.txt
+ws-*.txt
+api-check.txt
+audit*.txt
+bal*.json
+bal*.txt
+banner-*.txt
+bins.txt
+brand-assets.txt
+zombie-kill.txt
+
+# ---- root-level session clutter: scratch dumps, health checks, screenshots ----
+/*.txt
+!README.md
+!REBUILD_REPORT.md
+/*.html
+/*.png
+/health.json
+/rpc-health*.json
+/vanity-ground.json
+/vanity-inline.json
+/screens/
+/shots/
+/web/*.txt
+
+# ---- brand session screenshots (keep only brand/png and brand/svg assets) ----
+/brand/*.png
+/brand/*.html
+
+# ---- cancelled tutorial video project (heavy media, no longer needed) ----
+/marketing/spawnpad-tutorial/
+
+# ---- stray error/session logs ----
+*.err
+

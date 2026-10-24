@@ -1,0 +1,17 @@
+01 -> 01-introducing-spawnpad.png (1600x900)
+02 -> 02-why-spawnpad.png (1600x900)
+03 -> 03-vanity-mint-spw.png (1600x900)
+04 -> 04-how-vanity-works.png (1600x900)
+05 -> 05-pumpfun-integration.png (1600x900)
+06 -> 06-user-benefits.png (1600x900)
+07 -> 07-launch-flow.png (1600x900)
+08 -> 08-built-for-solana.png (1600x900)
+09 -> 09-token-identity.png (1600x900)
+10 -> 10-under-the-hood.png (1600x900)
+11 -> 11-launch-transparency.png (1600x900)
+12 -> 12-whats-next.png (1600x900)
+13 -> 13-building-in-public.png (1600x900)
+14 -> 14-community-invitation.png (1600x900)
+15 -> 15-campaign-closer.png (1600x900)
+00 -> 00-contact-sheet.png
+CAMPAIGN-SHOTS-DONE

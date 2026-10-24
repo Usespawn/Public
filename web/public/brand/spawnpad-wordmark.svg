@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 326 72" fill="none">
+  <!-- SpawnPad wordmark — custom geometric monoline letterforms.
+       Cap height 46 (y6–52), x-height 32 (y18–50), descender to y64, stroke 7.
+       "Spawn" = white, "Pad" = cyan→violet gradient. -->
+  <defs>
+    <linearGradient id="wmPad" x1="212" y1="0" x2="318" y2="0" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#42E8FF"/>
+      <stop offset="1" stop-color="#9670FF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- S (cap) -->
+  <path d="M29 13 C29 8 24 6 16 6 C8 6 3 10 3 17 C3 24 8 27 16 29 C24 31 29 34 29 41 C29 48 24 52 16 52 C8 52 3 49 3 44"
+        stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <!-- p (stem + bowl attached to the stem, bulging right) -->
+  <path d="M45 24 C49 19 55 17 60 17 C68 17 73 23 73 33 C73 43 68 50 60 50 C55 50 49 48 45 44"
+        stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M45 14 L45 64" stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <!-- a -->
+  <path d="M107 24 C104 20 100 18 95 18 C88 18 84 24 84 34 C84 44 88 50 95 50 C100 50 104 48 107 44"
+        stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M107 18 L107 50" stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <!-- w -->
+  <path d="M122 18 L130 50 L140 27 L150 50 L158 18"
+        stroke="#F4F7FF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- n -->
+  <path d="M173 18 L173 50" stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <path d="M173 28 C176 21 181 18 186 18 C193 18 197 23 197 31 L197 50"
+        stroke="#F4F7FF" stroke-width="7" stroke-linecap="round"/>
+  <!-- P (cap) -->
+  <path d="M213 52 L213 6 L228 6 C236 6 240 11 240 19 C240 27 236 32 228 32 L213 32"
+        stroke="url(#wmPad)" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- a -->
+  <path d="M275 24 C272 20 268 18 263 18 C256 18 252 24 252 34 C252 44 256 50 263 50 C268 50 272 48 275 44"
+        stroke="url(#wmPad)" stroke-width="7" stroke-linecap="round"/>
+  <path d="M275 18 L275 50" stroke="url(#wmPad)" stroke-width="7" stroke-linecap="round"/>
+  <!-- d -->
+  <path d="M315 24 C312 20 308 18 303 18 C296 18 292 24 292 34 C292 44 296 50 303 50 C308 50 312 48 315 44"
+        stroke="url(#wmPad)" stroke-width="7" stroke-linecap="round"/>
+  <path d="M315 6 L315 50" stroke="url(#wmPad)" stroke-width="7" stroke-linecap="round"/>
+</svg>

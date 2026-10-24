@@ -1,0 +1,35 @@
+{
+  "name": "@spawnpad/vanity-grinder",
+  "version": "0.1.0",
+  "description": "Mines Solana Ed25519 keypairs whose Base58 address ends in a vanity suffix (default: Spw) — Spawnpad's mint address grinder",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "spawn-grind": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsx --test test/*.test.ts",
+    "grind": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.95.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.4"
+  },
+  "keywords": [
+    "solana",
+    "vanity",
+    "keypair",
+    "launchpad",
+    "spawnpad",
+    "bonding-curve"
+  ],
+  "license": "MIT"
+}

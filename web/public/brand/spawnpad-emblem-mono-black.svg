@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 224" fill="none">
+  <!-- SpawnPad emblem — monochrome (#0B1124) -->
+    <path d="M57.5 169 L76 154 L24 70 L42.9 54.6" stroke="#0B1124" stroke-width="14" fill="none" stroke-linejoin="round"/>
+    <path d="M15.1 203.5 L44.2 179.8" stroke="#0B1124" stroke-width="14" fill="none" stroke-linejoin="round"/>
+    <path d="M56.1 43.9 L84.9 20.5" stroke="#0B1124" stroke-width="14" fill="none" stroke-linejoin="round"/>
+    <path d="M99 1 L91 27 L97 54 L79 34 L66 24 L74 9 Z" fill="#0B1124"/>
+    <path d="M1 223 L9 197 L3 170 L21 178 L34 200 L26 215 Z" fill="#0B1124"/>
+    <circle cx="49.5" cy="49.3" r="8.5" stroke="#0B1124" stroke-width="3.5" fill="none"/>
+    <circle cx="51" cy="174" r="8.5" stroke="#0B1124" stroke-width="3.5" fill="none"/>
+</svg>

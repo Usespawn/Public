@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 224" fill="none">
+  <!-- SpawnPad emblem — the spawn trajectory -->
+  <defs>
+  <linearGradient id="traj" x1="95" y1="5" x2="15" y2="215" gradientUnits="userSpaceOnUse">
+    <stop offset="0" stop-color="#2BE5FF"/>
+    <stop offset="0.38" stop-color="#4E86FF"/>
+    <stop offset="0.68" stop-color="#8B5CF6"/>
+    <stop offset="1" stop-color="#E73BD6"/>
+  </linearGradient>
+  </defs>
+    <path d="M57.5 169 L76 154 L24 70 L42.9 54.6" stroke="url(#traj)" stroke-width="14" fill="none" stroke-linejoin="round"/>
+    <path d="M15.1 203.5 L44.2 179.8" stroke="url(#traj)" stroke-width="14" fill="none" stroke-linejoin="round"/>
+    <path d="M56.1 43.9 L84.9 20.5" stroke="url(#traj)" stroke-width="14" fill="none" stroke-linejoin="round"/>
+    <path d="M99 1 L91 27 L97 54 L79 34 L66 24 L74 9 Z" fill="url(#traj)"/>
+    <path d="M1 223 L9 197 L3 170 L21 178 L34 200 L26 215 Z" fill="url(#traj)"/>
+    <circle cx="49.5" cy="49.3" r="8.5" stroke="url(#traj)" stroke-width="3.5" fill="none"/>
+    <circle cx="51" cy="174" r="8.5" stroke="url(#traj)" stroke-width="3.5" fill="none"/>
+</svg>
