@@ -62,7 +62,12 @@ export async function pinataUploadFile(opts: {
   form.append("network", "public"); // required by the v3 API; public = resolvable
   form.append("file", blob, opts.name);
   form.append("name", opts.name);
-  form.append("cid_version", "v1");
+  // CIDv0 (Qm…, 46 chars) on purpose: the token's on-chain create_v2 `uri`
+  // embeds this URL in its instruction data and Solana rejects packets over
+  // 1232 bytes — the launch transaction only fits with the shortest URI form
+  // (a 59-char CIDv1 would add 13 bytes). CIDv0 is also pump.fun's own
+  // metadata convention.
+  form.append("cid_version", "v0");
 
   let res: Response;
   try {

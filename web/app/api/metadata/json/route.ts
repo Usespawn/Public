@@ -10,7 +10,12 @@
  */
 import { NextResponse } from "next/server";
 import { pinataUploadJson } from "@/lib/metadata/pinata";
-import { buildTokenMetadata, validateTokenMetadataInput } from "@/lib/metadata/upload";
+import {
+  buildImageGatewayUrl,
+  buildTokenMetadata,
+  LAUNCH_METADATA_GATEWAY,
+  validateTokenMetadataInput,
+} from "@/lib/metadata/upload";
 
 const hits = new Map<string, number[]>();
 function rateLimited(ip: string): boolean {
@@ -52,7 +57,15 @@ export async function POST(req: Request) {
   try {
     const safeName = `${metadata.symbol}-${metadata.name}`.slice(0, 40).replace(/[^\w.-]+/g, "_");
     const result = await pinataUploadJson(`${safeName}.json`, metadata);
-    return NextResponse.json({ ok: true, cid: result.cid, url: result.url });
+    return NextResponse.json({
+      ok: true,
+      cid: result.cid,
+      // The launch flow pins the ON-CHAIN metadata URI to the shortest public
+      // gateway (see LAUNCH_METADATA_GATEWAY): the create_v2 instruction
+      // embeds this URL in its data and Solana rejects packets over 1232
+      // bytes. The configured gateway keeps serving image display urls.
+      url: buildImageGatewayUrl(result.cid, LAUNCH_METADATA_GATEWAY),
+    });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : "metadata upload failed";
     const status = msg.startsWith("IPFS upload not configured") ? 503 : 502;

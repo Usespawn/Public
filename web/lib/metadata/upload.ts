@@ -163,6 +163,16 @@ export function isPlausibleCid(cid: string): boolean {
 }
 
 /**
+ * Gateway used to build the token's ON-CHAIN metadata URI (the create_v2
+ * `uri` argument). That URL is embedded verbatim in the transaction's
+ * instruction data, and Solana rejects packets over 1232 bytes — the launch
+ * transaction only fits with the shortest reliable public gateway. The
+ * configured PINATA_GATEWAY (often a long dedicated host) stays in charge of
+ * image DISPLAY urls; only this on-chain URI is size-critical.
+ */
+export const LAUNCH_METADATA_GATEWAY = "ipfs.io";
+
+/**
  * Builds a publicly resolvable IPFS gateway URL.
  * Gateway: explicit host argument, else PINATA_GATEWAY, else "ipfs.io".
  * Accepts a bare host ("ipfs.io") or one with a scheme; strips any trailing

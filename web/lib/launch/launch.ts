@@ -32,6 +32,87 @@ import { PUMP_PROGRAM_ID, bondingCurveAddress, getRpcUrl, MANDATORY_SUFFIX, isSp
  *  dependency in the web bundle. */
 const NATIVE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
 
+type PumpSdkModule = typeof import("@pump-fun/pump-sdk");
+
+/**
+ * Loads the official pump SDK.
+ *
+ * In Node (unit tests / scripts) the SDK's published ESM build cannot be
+ * imported at all: its dependency @pump-fun/agent-payments-sdk does
+ * `import { BN } from "@coral-xyz/anchor"` — a named export from a CJS package
+ * that Node's cjs-module-lexer cannot statically detect — so the whole import
+ * graph throws SyntaxError under node --test / tsx. There we load the
+ * IDENTICAL official CJS build through createRequire instead. Browsers (the
+ * actual launch flow) keep the plain dynamic import: getBuiltinModule only
+ * exists in Node, so no Node builtin is ever referenced from the browser
+ * bundle.
+ */
+async function loadPumpSdk(): Promise<PumpSdkModule> {
+  const proc: NodeJS.Process | undefined =
+    typeof process !== "undefined" ? process : undefined;
+  if (
+    proc &&
+    typeof proc.versions?.node === "string" &&
+    typeof window === "undefined"
+  ) {
+    const nodeModule = (
+      proc as NodeJS.Process & {
+        getBuiltinModule?: (
+          id: string
+        ) => typeof import("module") | undefined;
+      }
+    ).getBuiltinModule?.("module");
+    if (nodeModule?.createRequire) {
+      // Resolve relative to the process working directory (web/): correct for
+      // tsx test runs and for server-side execution alike.
+      return nodeModule
+        .createRequire(process.cwd() + "/")("@pump-fun/pump-sdk") as PumpSdkModule;
+    }
+  }
+  return await import("@pump-fun/pump-sdk");
+}
+
+/** Solana's hard packet limit: the serialized transaction may not exceed it. */
+export const MAX_SERIALIZED_BYTES = 1232;
+
+/** Any 32-byte base58 value used as a blockhash placeholder when measuring.
+ *  The blockhash field is always exactly 32 bytes, so the measured wire size
+ *  is identical to the one with a real blockhash. */
+const SIZE_PROBE_BLOCKHASH = "11111111111111111111111111111111";
+
+/**
+ * Preflight size guard: measures the exact serialized wire size and refuses to
+ * return a transaction Solana would reject with "Transaction too large".
+ * Runs BEFORE the wallet is asked to approve anything.
+ *
+ * Wire size = compiled message + 1 varint byte (signature count — always one
+ * byte for <=127 signers) + 64 bytes per required signer. Verified against
+ * production: message 1109 + 1 + 2*64 = the exact 1238-byte wire size that
+ * overflowed before the fix.
+ */
+export function assertLaunchTxSize(tx: Transaction): void {
+  const hadBlockhash =
+    typeof tx.recentBlockhash === "string" && tx.recentBlockhash.length > 0;
+  if (!hadBlockhash) tx.recentBlockhash = SIZE_PROBE_BLOCKHASH;
+  try {
+    const msg = tx.compileMessage();
+    const size =
+      msg.serialize().length + 1 + 64 * msg.header.numRequiredSignatures;
+    if (size > MAX_SERIALIZED_BYTES) {
+      throw new Error(
+        `launch transaction too large for the Solana ${MAX_SERIALIZED_BYTES}-byte ` +
+          `packet limit (${size} bytes) — shorten the token name or symbol, or ` +
+          `turn off Dev Initial Buy and retry`
+      );
+    }
+  } finally {
+    if (!hadBlockhash) {
+      (tx as { recentBlockhash?: string }).recentBlockhash = undefined;
+    }
+  }
+}
+
+
 export interface LaunchParams {
   name: string;
   symbol: string;
@@ -59,7 +140,7 @@ export async function buildCreateTransaction(
   if (!isSpawnVanityAddress(params.mintKeypair.publicKey.toBase58())) {
     throw new Error("mint keypair does not end in 'Spw' — refusing to launch");
   }
-  const { PUMP_SDK } = await import("@pump-fun/pump-sdk");
+  const { PUMP_SDK } = await loadPumpSdk();
   const createIxn: TransactionInstruction = await PUMP_SDK.createV2Instruction({
     mint: params.mintKeypair.publicKey,
     name: params.name,
@@ -76,6 +157,8 @@ export async function buildCreateTransaction(
   tx.add(createIxn);
   tx.feePayer = params.payer;
   if (opts?.recentBlockhash) tx.recentBlockhash = opts.recentBlockhash;
+  // Refuse to hand the wallet anything Solana would reject outright.
+  assertLaunchTxSize(tx);
   return tx;
 }
 
@@ -84,7 +167,7 @@ export async function buildCreateTransaction(
  * to quote the initial buy. One RPC round-trip.
  */
 export async function fetchPumpGlobal(connection: Connection): Promise<Global> {
-  const { OnlinePumpSdk } = await import("@pump-fun/pump-sdk");
+  const { OnlinePumpSdk } = await loadPumpSdk();
   return new OnlinePumpSdk(connection).fetchGlobal();
 }
 
@@ -93,7 +176,7 @@ export async function fetchPumpGlobal(connection: Connection): Promise<Global> {
  * SOL-quoted curve. Pure math against the Global account — no RPC.
  */
 export async function computeExpectedTokens(global: Global, solLamports: bigint): Promise<BN> {
-  const { getBuyTokenAmountFromSolAmount } = await import("@pump-fun/pump-sdk");
+  const { getBuyTokenAmountFromSolAmount } = await loadPumpSdk();
   const { default: BN } = await import("bn.js");
   return getBuyTokenAmountFromSolAmount({
     global,
@@ -130,7 +213,7 @@ export async function buildCreateAndBuyTransaction(
   if (params.devBuyLamports <= 0n) {
     throw new Error("dev buy amount must be positive");
   }
-  const { PUMP_SDK } = await import("@pump-fun/pump-sdk");
+  const { PUMP_SDK } = await loadPumpSdk();
   const { default: BN } = await import("bn.js");
 
   const amount = await computeExpectedTokens(params.global, params.devBuyLamports);
@@ -152,11 +235,27 @@ export async function buildCreateAndBuyTransaction(
   });
 
   const tx = new Transaction();
-  tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 500_000 }));
-  tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+  // Deliberately NO compute-budget instructions in the atomic bundle. The
+  // Solana packet limit is a hard 1232 bytes and this transaction (26 unique
+  // account keys + the official create_v2/ATA/buy_v2 layouts, which must stay
+  // untouched) only fits without them. Measured before the fix: 1258 bytes on
+  // mainnet — "Transaction too large: 1258 > 1232".
+  //  - Compute unit limit: Solana's default budget without a
+  //    SetComputeUnitLimit instruction is 200,000 CU per NON-BUILTIN
+  //    instruction (create_v2 + the ATA idempotent create + buy_v2 = 3 =>
+  //    600,000 CU), which EXCEEDS the ~500k the pump SDK recommends even for
+  //    the heavier token-quoted case — execution is safe and cheaper to budget.
+  //  - Priority fee (was 1,000 microLamports/CU = ~600 lamports total):
+  //    dropped; negligible in practice and its wire bytes are required for the
+  //    metadata URI. If priority fees are ever wanted again, the correct fix
+  //    is a v0 transaction with address-lookup tables (frees hundreds of
+  //    bytes), not cramming them back into this legacy packet.
   for (const ix of ixs) tx.add(ix);
   tx.feePayer = params.payer;
   if (opts?.recentBlockhash) tx.recentBlockhash = opts.recentBlockhash;
+  // Refuse to hand the wallet anything Solana would reject outright (long
+  // name/symbol combinations can still overflow; the error is actionable).
+  assertLaunchTxSize(tx);
   return tx;
 }
 

@@ -174,6 +174,10 @@ test("pinataUploadFile: success → cid + resolvable gateway URL; JWT sent; endp
     const form = init.body as FormData;
     assert.equal(form.get("network"), "public");
     assert.ok(form.get("file") instanceof Blob);
+    // CIDv0 is a hard contract: the on-chain create_v2 `uri` embeds this URL
+    // and the launch transaction only fits the 1232-byte packet with the
+    // shortest (46-char) CID form. See tests/txsize.test.ts.
+    assert.equal(form.get("cid_version"), "v0");
     return { ok: true, status: 200, json: async () => ({ data: { cid: CID, size: 12 } }) } as any;
   });
   try {
