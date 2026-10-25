@@ -15,7 +15,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
-import { Keypair, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { Keypair, LAMPORTS_PER_SOL, Transaction } from "@solana/web3.js";
 import type BN from "bn.js";
 import type { Global } from "@pump-fun/pump-sdk";
 import { VanityGrinder } from "@/lib/vanity/grinder";
@@ -24,13 +24,17 @@ import { MANDATORY_SUFFIX, isSpawnVanityAddress, getNetwork } from "@/lib/config
 import {
   buildCreateTransaction,
   buildCreateAndBuyTransaction,
+  buildStandaloneBuyTransaction,
+  fetchBuyStateFor,
   fetchPumpGlobal,
   computeExpectedTokens,
   signLaunch,
+  signBuyTransaction,
   submitLaunch,
   confirmLaunch,
   verifyLaunchOnChain,
   verifyDevBuyOnChain,
+  LaunchTxTooLargeError,
 } from "@/lib/launch/launch";
 import {
   validateDevBuyAmount,
@@ -87,6 +91,7 @@ export function LaunchWizard() {
   const [submitted, setSubmitted] = useState(false);
   const [rechecking, setRechecking] = useState(false);
   const [signature, setSignature] = useState<string | null>(null);
+  const [buySignature, setBuySignature] = useState<string | null>(null);
   const [mint58, setMint58] = useState<string | null>(null);
   const [devBuyResult, setDevBuyResult] = useState<DevBuyResultView>({
     enabled: false, solSpentSol: null, tokensReceived: null,
@@ -164,6 +169,7 @@ export function LaunchWizard() {
     sentAtRef.current = null;
     setError(null);
     setSignature(null);
+    setBuySignature(null);
     setSubmitted(false);
     setDevBuyResult({ enabled: devBuyEnabled, solSpentSol: null, tokensReceived: null });
     try {
@@ -234,16 +240,40 @@ export function LaunchWizard() {
         payer: publicKey,
         mintKeypair: res.mint,
       };
-      let tx;
+      let tx: Transaction | null = null;
+      let viaTwoStage = false;
       if (devBuyEnabled && devVal.lamports) {
         // ATOMIC create + initial buy (official create_v2 + buy_v2 bundle).
         if (!globalCache.current) globalCache.current = await fetchPumpGlobal(connection);
         if (cancelledRef.current) return;
-        tx = await buildCreateAndBuyTransaction(
-          { ...common, devBuyLamports: devVal.lamports, global: globalCache.current },
-          { recentBlockhash: blockhash }
-        );
+        try {
+          tx = await buildCreateAndBuyTransaction(
+            { ...common, devBuyLamports: devVal.lamports, global: globalCache.current },
+            { recentBlockhash: blockhash }
+          );
+        } catch (e) {
+          if (e instanceof LaunchTxTooLargeError) {
+            // The combined transaction cannot fit Solana's hard 1232-byte
+            // packet limit. It was REJECTED BEFORE SUBMISSION — never signed,
+            // never broadcast. Switch to the official two-stage flow: create
+            // first (always fits), confirm it, then a separate dev buy.
+            viaTwoStage = true;
+            tx = null;
+            setSubStatus(
+              "combined create + dev buy transaction exceeds the network's " +
+                `${(e as LaunchTxTooLargeError).wireSize} > 1232 byte limit — ` +
+                "switching to create first, dev buy separately…"
+            );
+          } else {
+            throw e;
+          }
+        }
       } else {
+        tx = await buildCreateTransaction(common, { recentBlockhash: blockhash });
+      }
+      // Two-stage fallback: build the create-only transaction (it keeps its
+      // compute-budget instructions and always fits the packet limit).
+      if (tx === null) {
         tx = await buildCreateTransaction(common, { recentBlockhash: blockhash });
       }
       if (cancelledRef.current) return;
@@ -274,7 +304,65 @@ export function LaunchWizard() {
       let devResult: DevBuyResultView = {
         enabled: devBuyEnabled, solSpentSol: null, tokensReceived: null,
       };
-      if (devBuyEnabled) {
+      let buySigLocal: string | null = null;
+      if (devBuyEnabled && viaTwoStage) {
+        // TWO-STAGE flow: the token creation is already CONFIRMED and
+        // verified. The dev buy is its own transaction — submit, confirm and
+        // verify it independently. A buy failure NEVER invalidates the
+        // creation and is NEVER reported as success.
+        try {
+          setSubStatus("token created — preparing the dev buy…");
+          const buyState = await fetchBuyStateFor(res.address, publicKey, connection);
+          if (cancelledRef.current) return;
+          const { blockhash: buyBlockhash } = await connection.getLatestBlockhash("finalized");
+          const buyTx = await buildStandaloneBuyTransaction(
+            {
+              mint58: res.address,
+              user: publicKey,
+              devBuyLamports: devVal.lamports!,
+              global: globalCache.current!,
+              buyState,
+            },
+            { recentBlockhash: buyBlockhash }
+          );
+          setSubStatus("approve the dev buy in your wallet");
+          const buyRaw = await signBuyTransaction(buyTx, { signTransaction });
+          setPhase("submitting");
+          setSubStatus("broadcasting the dev buy…");
+          buySigLocal = await submitLaunch(buyRaw, connection);
+          setBuySignature(buySigLocal);
+          setSubStatus("confirming the dev buy…");
+          await confirmLaunch(connection, buySigLocal);
+          setSubStatus("verifying the dev buy on-chain…");
+          const vdb = await verifyDevBuyOnChain(res.address, publicKey.toBase58(), buySigLocal);
+          devResult = {
+            enabled: true,
+            viaTwoStage: true,
+            buySignature: buySigLocal,
+            solSpentSol: vdb.solSpentLamports != null ? formatSol(vdb.solSpentLamports) : null,
+            tokensReceived:
+              vdb.tokensReceived != null
+                ? vdb.tokensReceived.toLocaleString("en-US", { maximumFractionDigits: 2 })
+                : null,
+          };
+        } catch (buyErr) {
+          // Preserve the confirmed creation; report the buy failure
+          // separately. No automatic retry — the next buy must be a
+          // deliberate user action (pump.fun or a fresh SpawnPad launch).
+          const bmsg = buyErr instanceof Error ? buyErr.message : String(buyErr);
+          devResult = {
+            enabled: true,
+            viaTwoStage: true,
+            failed: true,
+            error: bmsg,
+            buySignature: buySigLocal,
+            solSpentSol: null,
+            tokensReceived: null,
+          };
+        }
+      } else if (devBuyEnabled) {
+        // ATOMIC flow: create + buy share one transaction and one outcome;
+        // verification of that transaction covers both.
         const vdb = await verifyDevBuyOnChain(res.address, publicKey.toBase58(), sig);
         devResult = {
           enabled: true,
@@ -378,6 +466,29 @@ export function LaunchWizard() {
         return;
       }
       await verifyLaunchOnChain(mint58 ?? "", signature);
+      // If the dev buy ran as a separate transaction, re-verify it too. The
+      // atomic bundle needs no second check (one tx = one outcome).
+      if (buySignature) {
+        try {
+          const vdb = await verifyDevBuyOnChain(
+            mint58 ?? "",
+            publicKey?.toBase58() ?? "",
+            buySignature
+          );
+          setDevBuyResult({
+            enabled: true,
+            viaTwoStage: true,
+            buySignature,
+            solSpentSol: vdb.solSpentLamports != null ? formatSol(vdb.solSpentLamports) : null,
+            tokensReceived:
+              vdb.tokensReceived != null
+                ? vdb.tokensReceived.toLocaleString("en-US", { maximumFractionDigits: 2 })
+                : null,
+          });
+        } catch {
+          // Keep the failed state visible — the recheck never fabricates success.
+        }
+      }
       transition(VanityState.CONFIRMING);
       transition(VanityState.SUCCESS);
       setPhase("success");
@@ -393,7 +504,7 @@ export function LaunchWizard() {
     } finally {
       setRechecking(false);
     }
-  }, [signature, connection, mint58, transition, refreshBalance]);
+  }, [signature, buySignature, connection, mint58, transition, refreshBalance]);
 
   const reset = useCallback(() => {
     machine.current = new VanityMachine();
@@ -407,11 +518,44 @@ export function LaunchWizard() {
     setGrind({ attempts: 0, aps: 0, elapsed: 0 });
     setMint58(null);
     setSignature(null);
+    setBuySignature(null);
     setError(null);
     setSubmitted(false);
     setDevBuyResult({ enabled: false, solSpentSol: null, tokensReceived: null });
     setInfoState(EMPTY_INFO);
   }, []);
+
+  /**
+   * Verification-only recheck of a FAILED two-stage dev buy (read-only RPC).
+   * NEVER re-broadcasts and never signs anything — the user's next purchase
+   * must be a deliberate action, so an automatic retry (and any chance of an
+   * unintended duplicate buy) is structurally impossible here.
+   */
+  const recheckBuy = useCallback(async () => {
+    if (!buySignature || !mint58) return;
+    setRechecking(true);
+    try {
+      const vdb = await verifyDevBuyOnChain(
+        mint58,
+        publicKey?.toBase58() ?? "",
+        buySignature
+      );
+      setDevBuyResult({
+        enabled: true,
+        viaTwoStage: true,
+        buySignature,
+        solSpentSol: vdb.solSpentLamports != null ? formatSol(vdb.solSpentLamports) : null,
+        tokensReceived:
+          vdb.tokensReceived != null
+            ? vdb.tokensReceived.toLocaleString("en-US", { maximumFractionDigits: 2 })
+            : null,
+      });
+    } catch {
+      // Still not verifiable — the failed state stays.
+    } finally {
+      setRechecking(false);
+    }
+  }, [buySignature, mint58, publicKey]);
 
   const clusterQuery = getNetwork() === "mainnet-beta" ? "" : "?cluster=devnet";
   const launchReady = connected && isInfoValid(info) && devBuyValidation.ok;
@@ -426,9 +570,12 @@ export function LaunchWizard() {
           mint58={mint58}
           creator58={publicKey?.toBase58() ?? null}
           signature={signature}
+          buySignature={buySignature}
           devBuy={devBuyResult}
           clusterQuery={clusterQuery}
           onReset={reset}
+          onRecheckBuy={() => void recheckBuy()}
+          recheckingBuy={rechecking}
         />
       </div>
     );
@@ -444,6 +591,7 @@ export function LaunchWizard() {
           error={error}
           submitted={submitted}
           signature={signature}
+          buySignature={buySignature}
           clusterQuery={clusterQuery}
           onCancel={cancelLaunch}
           onRetry={retryLaunch}

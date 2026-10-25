@@ -48,7 +48,10 @@ test("bondingCurveAddress is a deterministic PDA of the mint", () => {
   const a = bondingCurveAddress(kp.publicKey.toBase58());
   const b = bondingCurveAddress(kp.publicKey.toBase58());
   assert.equal(a, b);
-  assert.equal(a.length, 44);
+  // Base58 of a 32-byte pubkey is 43 or 44 chars (43 when the leading
+  // byte(s) are zero) — a random PDA can be either, per run. Assert the
+  // valid shape, not a lucky coin flip.
+  assert.ok(a.length === 43 || a.length === 44, `PDA base58 length must be 43 or 44, got ${a.length}`);
 });
 
 test("state machine allows the full happy path", () => {

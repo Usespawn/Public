@@ -24,6 +24,7 @@ import {
   buildCreateTransaction,
   buildCreateAndBuyTransaction,
   MAX_SERIALIZED_BYTES,
+  LaunchTxTooLargeError,
 } from "../lib/launch/launch";
 import type { Global } from "@pump-fun/pump-sdk";
 import { MANDATORY_SUFFIX } from "../lib/config";
@@ -209,6 +210,12 @@ test("oversized atomic launch fails LOUDLY with an actionable error", async () =
     thrown = e as Error;
   }
   assert.ok(thrown, "oversized transaction must be refused");
+  // Typed: the launch flow uses instanceof to switch to the two-stage flow.
+  assert.ok(thrown instanceof LaunchTxTooLargeError, "must be the typed too-large error");
+  assert.ok(
+    (thrown as LaunchTxTooLargeError).wireSize > MAX_SERIALIZED_BYTES,
+    "the typed error must carry the offending wire size"
+  );
   assert.match(thrown.message, /1232/);
   assert.match(thrown.message, /packet limit/);
   // Actionable: the user must be told exactly what to change.

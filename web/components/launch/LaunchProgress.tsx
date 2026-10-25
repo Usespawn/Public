@@ -26,6 +26,7 @@ export function LaunchProgress({
   error,
   submitted,
   signature,
+  buySignature,
   clusterQuery,
   onCancel,
   onRetry,
@@ -38,6 +39,8 @@ export function LaunchProgress({
   error: string | null;
   submitted: boolean;
   signature: string | null;
+  /** Dev-buy transaction signature when it runs as a separate transaction. */
+  buySignature?: string | null;
   /** "" on mainnet, "?cluster=devnet" otherwise. */
   clusterQuery: string;
   onCancel: () => void;
@@ -138,6 +141,16 @@ export function LaunchProgress({
             className="flex items-center gap-2 rounded-full border border-line-strong px-4 py-2 font-mono text-[12.5px] text-muted transition-colors hover:border-acid/50 hover:text-acid"
           >
             tx {signature.slice(0, 8)}… <ExternalLink className="size-3.5" />
+          </a>
+        )}
+        {buySignature && (
+          <a
+            href={`https://solscan.io/tx/${buySignature}${clusterQuery}`}
+            target="_blank"
+            rel="noreferrer"
+            className="flex items-center gap-2 rounded-full border border-line-strong px-4 py-2 font-mono text-[12.5px] text-muted transition-colors hover:border-acid/50 hover:text-acid"
+          >
+            dev buy {buySignature.slice(0, 8)}… <ExternalLink className="size-3.5" />
           </a>
         )}
       </div>

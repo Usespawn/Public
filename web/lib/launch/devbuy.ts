@@ -57,6 +57,11 @@ export function validateDevBuyAmount(
   }
   // Rounding to whole lamports — sub-lamport dust is folded, never accumulated.
   const lamports = BigInt(Math.round(sol * LAMPORTS_PER_SOL));
+  // Belt-and-braces: an input that survives the min check but rounds down to
+  // nothing must still be refused, never silently turned into a zero buy.
+  if (lamports <= 0n) {
+    return { ok: false, error: "SOL amount is too small to buy anything" };
+  }
   if (balanceLamports != null) {
     const required = lamports + DEV_BUY_OVERHEAD_LAMPORTS;
     if (required > BigInt(Math.floor(balanceLamports))) {

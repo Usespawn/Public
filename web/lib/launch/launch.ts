@@ -23,14 +23,23 @@ import {
   Transaction,
   TransactionInstruction,
 } from "@solana/web3.js";
+import type { AccountInfo } from "@solana/web3.js";
+import type { Message } from "@solana/web3.js";
 import type BN from "bn.js";
-import type { Global } from "@pump-fun/pump-sdk";
+import type { BondingCurve, Global, OnlinePumpSdk } from "@pump-fun/pump-sdk";
 import { PUMP_PROGRAM_ID, bondingCurveAddress, getRpcUrl, MANDATORY_SUFFIX, isSpawnVanityAddress } from "@/lib/config";
 
 /** Wrapped-SOL mint (quote asset of pump.fun curves). Same constant as
  *  @solana/spl-token's NATIVE_MINT, declared locally to avoid a new direct
  *  dependency in the web bundle. */
 const NATIVE_MINT = new PublicKey("So11111111111111111111111111111111111111112");
+
+/** pump.fun v2 tokens are Token-2022 mints (the SDK's create/atomic-bundle
+ *  builders hardcode it for the user's token ATA). Declared locally like
+ *  NATIVE_MINT — @solana/spl-token is not a direct dependency. */
+const TOKEN_2022_PROGRAM_ID = new PublicKey(
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+);
 
 type PumpSdkModule = typeof import("@pump-fun/pump-sdk");
 
@@ -90,20 +99,79 @@ const SIZE_PROBE_BLOCKHASH = "11111111111111111111111111111111";
  * production: message 1109 + 1 + 2*64 = the exact 1238-byte wire size that
  * overflowed before the fix.
  */
+/** Typed "combined transaction cannot fit" error so callers can distinguish
+ *  the size rejection (which the two-stage flow CAN work around) from any
+ *  other builder failure. Thrown BEFORE any signature is requested. */
+export class LaunchTxTooLargeError extends Error {
+  /** Serialized wire size that exceeded the limit. */
+  readonly wireSize: number;
+  constructor(wireSize: number) {
+    super(
+      `launch transaction too large for the Solana ${MAX_SERIALIZED_BYTES}-byte ` +
+        `packet limit (${wireSize} bytes) — shorten the token name or symbol, or ` +
+        `turn off Dev Initial Buy and retry`
+    );
+    this.name = "LaunchTxTooLargeError";
+    this.wireSize = wireSize;
+  }
+}
+
+/**
+ * Exact wire size of a compiled LEGACY message, byte-for-byte the same layout
+ * @solana/web3.js's Message.serialize() produces: 3 header bytes, shortvec +
+ * 32-byte static account keys, 32-byte blockhash, shortvec instruction count,
+ * then per instruction: programIdIndex u8, shortvec account-key count, the
+ * account indexes, shortvec data length, data.
+ *
+ * Needed because that library method allocates FIXED 1232/2048-byte buffers
+ * and throws a raw `RangeError: encoding overruns Uint8Array` when the message
+ * overruns them — instead of returning bytes we could measure. The compiled
+ * message stores instruction data as a base58 STRING (its .length says nothing
+ * about the decoded byte size), so data lengths are read from the ORIGINAL
+ * transaction instructions, which appear in the same order in the message.
+ */
+function compiledLegacyMessageWireSize(msg: Message, tx: Transaction): number {
+  /** Byte length of a shortvec encoding (mirrors web3.js encodeLength). */
+  const shortVecLength = (len: number): number => {
+    let count = 1;
+    for (let v = len >> 7; v !== 0; v >>= 7) count++;
+    return count;
+  };
+  const numKeys = msg.accountKeys.length;
+  let size = 3 + shortVecLength(numKeys) + 32 * numKeys + 32;
+  size += shortVecLength(msg.instructions.length);
+  msg.instructions.forEach((ix, i) => {
+    const dataLength = tx.instructions[i]?.data.length ?? 0;
+    size += 1 + shortVecLength(ix.accounts.length) + ix.accounts.length;
+    size += shortVecLength(dataLength) + dataLength;
+  });
+  return size;
+}
+
 export function assertLaunchTxSize(tx: Transaction): void {
   const hadBlockhash =
     typeof tx.recentBlockhash === "string" && tx.recentBlockhash.length > 0;
   if (!hadBlockhash) tx.recentBlockhash = SIZE_PROBE_BLOCKHASH;
   try {
     const msg = tx.compileMessage();
+    let messageSize: number;
+    try {
+      messageSize = msg.serialize().length;
+    } catch (err) {
+      // web3.js serializes the compiled message into FIXED 1232/2048-byte
+      // buffers and throws a raw RangeError ("encoding overruns Uint8Array")
+      // when it overruns — before our own limit check ever sees a size. An
+      // overrun is definitionally past the packet budget, but the two-stage
+      // fallback and the UI key on the TYPED error (instanceof), so re-measure
+      // the exact wire size (same layout, no fixed buffers) and raise the
+      // typed error instead of letting the raw RangeError escape.
+      if (!(err instanceof RangeError)) throw err;
+      messageSize = compiledLegacyMessageWireSize(msg, tx);
+    }
     const size =
-      msg.serialize().length + 1 + 64 * msg.header.numRequiredSignatures;
+      messageSize + 1 + 64 * msg.header.numRequiredSignatures;
     if (size > MAX_SERIALIZED_BYTES) {
-      throw new Error(
-        `launch transaction too large for the Solana ${MAX_SERIALIZED_BYTES}-byte ` +
-          `packet limit (${size} bytes) — shorten the token name or symbol, or ` +
-          `turn off Dev Initial Buy and retry`
-      );
+      throw new LaunchTxTooLargeError(size);
     }
   } finally {
     if (!hadBlockhash) {
@@ -260,6 +328,144 @@ export async function buildCreateAndBuyTransaction(
 }
 
 
+// ---------------------------------------------------------------------------
+// Two-stage flow (official SDK path): create first, CONFIRM it on-chain, then
+// submit the dev buy as its own transaction. Used automatically when the
+// atomic create+buy transaction would exceed Solana's 1232-byte packet limit
+// (e.g. a long name + symbol). The standalone buy is built with the SDK's
+// public buyV2Instructions against the LIVE confirmed curve state, so the
+// buy can never exceed the user's authorized SOL budget (amount/max-SOL pair
+// + the same 1% slippage the SDK's own atomic bundle defaults to).
+// ---------------------------------------------------------------------------
+
+export type PumpBuyState = Awaited<ReturnType<OnlinePumpSdk["fetchBuyState"]>>;
+
+/**
+ * Live curve state the standalone buy needs (bonding curve + the user's token
+ * ATA info). One RPC round-trip; call AFTER the create transaction is
+ * confirmed on-chain. Pump v2 tokens are Token-2022 mints, so the ATA lookup
+ * runs under TOKEN_2022_PROGRAM_ID — the SDK's default lookup program is the
+ * legacy TOKEN_PROGRAM_ID and would look at the WRONG token account.
+ */
+export async function fetchBuyStateFor(
+  mint58: string,
+  user: PublicKey,
+  connection: Connection
+): Promise<PumpBuyState> {
+  if (!isSpawnVanityAddress(mint58)) {
+    throw new Error("mint address does not end in 'Spw' — refusing to buy");
+  }
+  const { OnlinePumpSdk } = await loadPumpSdk();
+  return new OnlinePumpSdk(connection).fetchBuyState(
+    new PublicKey(mint58),
+    user,
+    TOKEN_2022_PROGRAM_ID
+  );
+}
+
+/**
+ * Expected token amount out for a SOL budget on an EXISTING (confirmed)
+ * bonding curve. Pure SDK math against the Global account + the decoded
+ * curve — no RPC.
+ */
+export async function computeExpectedTokensOnCurve(
+  global: Global,
+  bondingCurve: BondingCurve,
+  solLamports: bigint
+): Promise<BN> {
+  const { getBuyTokenAmountFromSolAmount } = await loadPumpSdk();
+  const { default: BN } = await import("bn.js");
+  return getBuyTokenAmountFromSolAmount({
+    global,
+    feeConfig: null,
+    // MUST be non-null: probe-verified that when mintSupply is null the SDK
+    // DISCARDS the passed curve and rebuilds a brand-new one from the Global
+    // account — so a live curve that has already progressed would be quoted
+    // at its INITIAL price, and a zeroed curve would never trigger the
+    // zero-quote guard. Passing the curve's own supply keeps the SDK on the
+    // real, live curve state (identical result for a fresh curve).
+    mintSupply: bondingCurve.tokenTotalSupply,
+    bondingCurve,
+    amount: new BN(solLamports.toString()),
+    quoteMint: NATIVE_MINT,
+  });
+}
+
+export interface StandaloneBuyParams {
+  mint58: string;
+  /** Connected creator wallet: buyer AND fee payer of the buy transaction. */
+  user: PublicKey;
+  /** Dev buy budget in lamports — the buy's max SOL cost. */
+  devBuyLamports: bigint;
+  global: Global;
+  /** Live curve state fetched via fetchBuyStateFor after create confirmed. */
+  buyState: PumpBuyState;
+}
+
+/**
+ * Builds the SEPARATE dev-buy transaction (official `buyV2Instructions`).
+ * The wallet is the only signer (no mint keypair needed past creation).
+ * The program can never charge more than `devBuyLamports` (+ the SDK's 1%
+ * slippage margin) for the buy.
+ */
+export async function buildStandaloneBuyTransaction(
+  params: StandaloneBuyParams,
+  opts?: { recentBlockhash?: string }
+): Promise<Transaction> {
+  if (!isSpawnVanityAddress(params.mint58)) {
+    throw new Error("mint address does not end in 'Spw' — refusing to buy");
+  }
+  if (params.devBuyLamports <= 0n) {
+    throw new Error("dev buy amount must be positive");
+  }
+  const { PUMP_SDK } = await loadPumpSdk();
+  const { default: BN } = await import("bn.js");
+
+  // Quote against the LIVE confirmed curve. A zero/negative quote means the
+  // curve state is unusable — refuse instead of building a losing buy.
+  const amount = await computeExpectedTokensOnCurve(
+    params.global,
+    params.buyState.bondingCurve,
+    params.devBuyLamports
+  );
+  if (amount.isZero() || amount.isNeg()) {
+    throw new Error("dev buy quote returned no tokens — buy blocked");
+  }
+
+  const ixs: TransactionInstruction[] = await PUMP_SDK.buyV2Instructions({
+    global: params.global,
+    bondingCurveAccountInfo: params.buyState.bondingCurveAccountInfo,
+    bondingCurve: params.buyState.bondingCurve,
+    associatedUserAccountInfo: params.buyState.associatedUserAccountInfo,
+    mint: new PublicKey(params.mint58),
+    user: params.user,
+    amount,
+    quoteAmount: new BN(params.devBuyLamports.toString()),
+    slippage: 1, // same 1% margin the SDK's own atomic bundle defaults to
+    tokenProgram: TOKEN_2022_PROGRAM_ID,
+  });
+  // Instruction ordering per the SDK: optional idempotent ATA create FIRST,
+  // buy_v2 LAST.
+  const tx = new Transaction();
+  for (const ix of ixs) tx.add(ix);
+  tx.feePayer = params.user;
+  if (opts?.recentBlockhash) tx.recentBlockhash = opts.recentBlockhash;
+  // The buy leg obeys the same preflight size guard — never request wallet
+  // approval for anything Solana would reject outright.
+  assertLaunchTxSize(tx);
+  return tx;
+}
+
+/** Signs the standalone dev-buy transaction: the wallet is its ONLY signer. */
+export async function signBuyTransaction(
+  tx: Transaction,
+  wallet: LaunchSigner
+): Promise<Uint8Array> {
+  const signed = await wallet.signTransaction(tx);
+  return signed.serialize({ requireAllSignatures: true, verifySignatures: true });
+}
+
+
 /**
  * Requests the wallet signature: mint keypair partial-signs locally, the
  * wallet signs as fee payer. Returns the fully-signed raw bytes, ready to
@@ -366,9 +572,9 @@ export interface VerifiedDevBuy {
 export async function verifyDevBuyOnChain(
   mintBase58: string,
   creatorBase58: string,
-  signature: string
+  signature: string,
+  connection: Connection = new Connection(getRpcUrl(), "confirmed")
 ): Promise<VerifiedDevBuy> {
-  const connection = new Connection(getRpcUrl(), "confirmed");
   const tx = await connection.getParsedTransaction(signature, {
     maxSupportedTransactionVersion: 0,
     commitment: "confirmed",

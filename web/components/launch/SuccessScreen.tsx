@@ -4,7 +4,7 @@
  * Verified success screen (Phase 8). Everything shown comes from confirmed
  * on-chain data — estimates are never displayed as actuals.
  */
-import { BadgeCheck, Copy, ExternalLink } from "lucide-react";
+import { BadgeCheck, Copy, ExternalLink, RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { MANDATORY_SUFFIX, isSpawnVanityAddress } from "@/lib/config";
 
@@ -14,6 +14,14 @@ export interface DevBuyResultView {
   solSpentSol: string | null;
   /** Actual tokens received, verified on-chain. */
   tokensReceived: string | null;
+  /** True when the buy ran as its own confirmed transaction (two-stage flow). */
+  viaTwoStage?: boolean;
+  /** Buy transaction signature (two-stage flow only). */
+  buySignature?: string | null;
+  /** True when the token was created but the separate dev buy FAILED. */
+  failed?: boolean;
+  /** Why the dev buy failed. */
+  error?: string | null;
 }
 
 export function SuccessScreen({
@@ -22,18 +30,26 @@ export function SuccessScreen({
   mint58,
   creator58,
   signature,
+  buySignature,
   devBuy,
   clusterQuery,
   onReset,
+  onRecheckBuy,
+  recheckingBuy,
 }: {
   name: string;
   symbol: string;
   mint58: string;
   creator58: string | null;
   signature: string | null;
+  /** Dev-buy transaction signature when it ran separately (two-stage flow). */
+  buySignature?: string | null;
   devBuy: DevBuyResultView;
   clusterQuery: string;
   onReset: () => void;
+  /** Verification-only recheck of a failed two-stage dev buy (read-only). */
+  onRecheckBuy?: () => void;
+  recheckingBuy?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const suffixOk = isSpawnVanityAddress(mint58);
@@ -91,12 +107,56 @@ export function SuccessScreen({
         {signature && <div className="break-all text-muted"><span className="text-faint">tx</span> {signature}</div>}
       </div>
 
-      {/* Dev buy outcome — confirmed data only */}
+      {/* Dev buy outcome — confirmed data only. Creation and buy are reported
+          INDEPENDENTLY: this box never converts a creation success into a buy
+          success, and a failed buy never invalidates the confirmed creation. */}
       <div className="rounded-xl border border-line bg-raised/40 p-4 font-mono text-[12.5px]">
-        {devBuy.enabled ? (
+        {devBuy.enabled && devBuy.failed ? (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2 font-bold text-crimson">
+              DEV BUY · failed
+            </div>
+            <p className="text-ink">
+              The token <span className="font-bold">was created</span> and is
+              verified on-chain — only the optional initial purchase did not
+              execute.
+            </p>
+            {devBuy.error && <p className="text-muted">reason: {devBuy.error}</p>}
+            {devBuy.buySignature && (
+              <a
+                href={`https://solscan.io/tx/${devBuy.buySignature}${clusterQuery}`}
+                target="_blank"
+                rel="noreferrer"
+                className="block break-all text-muted underline decoration-dotted hover:text-acid"
+              >
+                buy tx {devBuy.buySignature}
+              </a>
+            )}
+            <p className="text-faint">
+              You can buy any time on pump.fun. SpawnPad will not retry
+              automatically — that could otherwise buy twice unintentionally.
+            </p>
+            {onRecheckBuy && devBuy.buySignature && (
+              <button
+                type="button"
+                onClick={onRecheckBuy}
+                disabled={recheckingBuy}
+                className="flex items-center gap-2 rounded-full border border-line-strong px-3 py-1.5 text-[12px] text-ink transition-colors hover:border-acid/50 hover:text-acid disabled:opacity-50"
+              >
+                <RefreshCw className={`size-3.5 ${recheckingBuy ? "animate-spin" : ""}`} />
+                {recheckingBuy ? "checking…" : "check buy status again"}
+              </button>
+            )}
+          </div>
+        ) : devBuy.enabled ? (
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-acid">
               <span className="font-bold">DEV BUY · executed</span>
+              {devBuy.viaTwoStage && (
+                <span className="text-[11px] font-normal text-faint">
+                  (separate transaction)
+                </span>
+              )}
             </div>
             <div className="flex justify-between">
               <span className="text-faint">SOL spent (incl. fees)</span>
@@ -110,6 +170,16 @@ export function SuccessScreen({
                 {devBuy.tokensReceived != null ? devBuy.tokensReceived : "not verifiable on-chain"}
               </span>
             </div>
+            {devBuy.viaTwoStage && devBuy.buySignature && (
+              <a
+                href={`https://solscan.io/tx/${devBuy.buySignature}${clusterQuery}`}
+                target="_blank"
+                rel="noreferrer"
+                className="block break-all pt-1 text-faint underline decoration-dotted hover:text-acid"
+              >
+                buy tx {devBuy.buySignature}
+              </a>
+            )}
           </div>
         ) : (
           <div className="text-faint">
