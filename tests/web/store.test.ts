@@ -84,10 +84,31 @@ describe("store: verified-launch registry", () => {
     expect(page[0].status).to.equal("verified");
   });
 
-  it("reads an empty/corrupt store as an empty list instead of crashing", () => {
-    fs.writeFileSync(path.join(dataDir, "launches.json"), "{corrupt");
-    expect(store.listLaunches()).to.deep.equal([]);
-    fs.writeFileSync(path.join(dataDir, "launches.json"), "[]");
-    expect(store.listLaunches()).to.deep.equal([]);
+  it("distinguishes genuinely empty from unreadable (registry health)", () => {
+    // Missing file → readable, genuinely empty.
+    const missingDir = fs.mkdtempSync(path.join(os.tmpdir(), "spawnpad-empty-"));
+    const prevDir = process.env.SPAWNPAD_DATA_DIR;
+    try {
+      process.env.SPAWNPAD_DATA_DIR = missingDir;
+      delete require.cache[require.resolve("../../web/lib/server/store")];
+      const fresh = require("../../web/lib/server/store") as typeof store;
+      expect(fresh.registryHealth()).to.deep.equal({ readable: true, error: null });
+      expect(fresh.listLaunches()).to.deep.equal([]);
+
+      // Corrupt file → still returns [] but flags the storage failure.
+      fs.writeFileSync(path.join(missingDir, "launches.json"), "{corrupt");
+      expect(fresh.listLaunches()).to.deep.equal([]);
+      const health = fresh.registryHealth();
+      expect(health.readable).to.equal(false);
+      expect(health.error).to.be.a("string").that.is.not.empty;
+    } finally {
+      process.env.SPAWNPAD_DATA_DIR = prevDir ?? dataDir;
+      delete require.cache[require.resolve("../../web/lib/server/store")];
+      try {
+        fs.rmSync(missingDir, { recursive: true, force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
   });
 });

@@ -34,6 +34,8 @@ chrome-*/
 *.webdata
 *.localstorage
 web/.data/
+# production-simulation sandbox (isolated SPAWNPAD_DATA_DIR used by tests)
+/.fresh-prod-sim/
 
 # ---- build sandbox / duplicate build tree ----
 build-isolate/

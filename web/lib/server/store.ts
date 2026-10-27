@@ -40,11 +40,22 @@ function ensureDir() {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
+let lastReadError: string | null = null;
+
 function readAll(): LaunchRecord[] {
   ensureDir();
+  if (!fs.existsSync(FILE)) {
+    lastReadError = null; // a missing file is a normal empty registry
+    return [];
+  }
   try {
-    return JSON.parse(fs.readFileSync(FILE, "utf8"));
-  } catch {
+    const parsed = JSON.parse(fs.readFileSync(FILE, "utf8")) as LaunchRecord[];
+    lastReadError = null;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    // Corrupt/unreadable registry: surfaced via registryHealth() so the API
+    // can distinguish "genuinely empty" from "storage failure". Never wiped.
+    lastReadError = String((e as Error)?.message || e);
     return [];
   }
 }
@@ -85,4 +96,14 @@ export function listLaunches(opts?: {
   if (opts?.verifiedOnly) all = all.filter((r) => r.status === "verified");
   if (opts?.limit) all = all.slice(0, opts.limit);
   return all;
+}
+
+/**
+ * Registry health for the listing API: distinguishes "genuinely empty"
+ * (readable, no records) from "storage failure" (corrupt/unreadable file —
+ * surfaced as a degraded response, never as a fake empty success).
+ */
+export function registryHealth(): { readable: boolean; error: string | null } {
+  readAll();
+  return { readable: lastReadError == null, error: lastReadError };
 }

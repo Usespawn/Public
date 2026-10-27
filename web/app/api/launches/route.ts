@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
-import { upsertLaunch, listLaunches } from "@/lib/server/store";
+import { upsertLaunch, listLaunches, registryHealth } from "@/lib/server/store";
 import { verifyLaunchSubmission } from "@/lib/server/verify";
+import { reconcileKnownLaunches } from "@/lib/server/launch-reconciler";
 import { getNetwork } from "@/lib/config";
 
 /** Simple fixed-window rate limiter per IP (10 submissions / 10 min). */
@@ -71,6 +72,50 @@ export async function GET(req: Request) {
   const url = new URL(req.url);
   const verifiedOnly = url.searchParams.get("verified") === "1";
   const limit = Math.min(Number(url.searchParams.get("limit") || 50), 200);
+
+  // Registry health first: a corrupt/unreadable store must surface as an
+  // explicit degraded response — never as a fake empty success, and
+  // reconciliation must not run (upserts would rewrite the unreadable file).
+  const health = registryHealth();
+  if (!health.readable) {
+    return NextResponse.json(
+      {
+        ok: false,
+        degraded: true,
+        error: `launch registry unreadable: ${health.error}`,
+        records: [],
+      },
+      { status: 500 }
+    );
+  }
+
+  // Durable reconciliation: known SpawnPad launches missing from this
+  // deployment's registry are re-verified on-chain and registered
+  // (bounded, idempotent, backoff-scheduled). A fresh deployment
+  // self-populates on its first Explore request.
+  let reconciliation: Awaited<ReturnType<typeof reconcileKnownLaunches>> | undefined;
+  let reconciliationError: string | undefined;
+  try {
+    reconciliation = await reconcileKnownLaunches();
+  } catch (e: unknown) {
+    reconciliationError = String((e as Error)?.message || e);
+  }
+
   const records = listLaunches({ limit, verifiedOnly });
-  return NextResponse.json({ ok: true, records });
+  return NextResponse.json({
+    ok: true,
+    records,
+    reconciliation: reconciliation
+      ? {
+          registered: reconciliation.registered,
+          failed: reconciliation.failed,
+          deferredCount: reconciliation.deferred.length,
+          skippedInFlight: reconciliation.skippedInFlight,
+          remoteFeedUsed: reconciliation.remoteFeedUsed,
+          remoteFeedError: reconciliation.remoteFeedError,
+          passCooldownActive: reconciliation.passCooldownActive,
+        }
+      : undefined,
+    reconciliationError,
+  });
 }

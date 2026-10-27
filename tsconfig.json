@@ -16,6 +16,8 @@
     "web/lib/server/tx-inspect.ts",
     "web/lib/server/metadata-tlv.ts",
     "web/lib/server/store.ts",
+    "web/lib/server/known-launches.ts",
+    "web/lib/launch/registry-reconciler.ts",
     "web/lib/metadata/gateway.ts",
     "web/lib/metadata/resolve.ts",
     "web/lib/market/types.ts",
