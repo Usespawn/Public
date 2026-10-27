@@ -11,5 +11,13 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["tests/**/*.ts"]
+  "include": [
+    "tests/**/*.ts",
+    "web/lib/server/tx-inspect.ts",
+    "web/lib/server/metadata-tlv.ts",
+    "web/lib/server/store.ts",
+    "web/lib/launch/feed-filter.ts",
+    "web/lib/launch/register.ts",
+    "web/lib/config.ts"
+  ]
 }

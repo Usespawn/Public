@@ -42,6 +42,7 @@ import {
   formatSol,
   type DevBuyValidation,
 } from "@/lib/launch/devbuy";
+import { browserRegisterLaunch, type RegistrationOutcome } from "@/lib/launch/register-browser";
 import { uploadMetadataToIpfs } from "@/lib/metadata/upload-client";
 import { isIpfsHttpsUrl, isPlausibleCid } from "@/lib/metadata/upload";
 import { StepInfoForm, isInfoValid, type TokenInfo } from "./StepInfoForm";
@@ -93,6 +94,8 @@ export function LaunchWizard() {
   const [signature, setSignature] = useState<string | null>(null);
   const [buySignature, setBuySignature] = useState<string | null>(null);
   const [mint58, setMint58] = useState<string | null>(null);
+  /** SpawnPad listing status for the just-verified launch (honest states only). */
+  const [listing, setListing] = useState<RegistrationOutcome | null>(null);
   const [devBuyResult, setDevBuyResult] = useState<DevBuyResultView>({
     enabled: false, solSpentSol: null, tokensReceived: null,
   });
@@ -171,6 +174,7 @@ export function LaunchWizard() {
     setSignature(null);
     setBuySignature(null);
     setSubmitted(false);
+    setListing(null);
     setDevBuyResult({ enabled: devBuyEnabled, solSpentSol: null, tokensReceived: null });
     try {
       // ---- 1. Validation --------------------------------------------------
@@ -377,19 +381,24 @@ export function LaunchWizard() {
       transition(VanityState.SUCCESS);
       setPhase("success");
 
-      // Best-effort backend recording AFTER verified success (non-blocking).
-      void fetch("/api/launches", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mint: res.address,
-          signature: sig,
-          name: info.name.trim(),
-          symbol: info.symbol.trim().toUpperCase(),
-          creator: publicKey.toBase58(),
-          network: getNetwork(),
-        }),
-      }).catch(() => undefined);
+      // Listing registration AFTER verified success. Bounded retries with a
+      // reconcile fallback; on persistent failure the payload is parked in
+      // localStorage and the feed reconciles it on its next load. The result
+      // is surfaced honestly on the success screen (the on-chain launch is
+      // already verified at this point — listing is a separate concern).
+      void browserRegisterLaunch({
+        mint: res.address,
+        signature: sig,
+        name: info.name.trim(),
+        symbol: info.symbol.trim().toUpperCase(),
+        uri: metadataUri,
+        creator: publicKey.toBase58(),
+        network: getNetwork(),
+      })
+        .then((outcome) => setListing(outcome))
+        .catch(() =>
+          setListing({ state: "failed", reason: "registration error", attemptsUsed: 0 })
+        );
     } catch (e: unknown) {
       if (cancelledRef.current) return;
       const msg = e instanceof Error ? e.message : String(e);
@@ -572,6 +581,7 @@ export function LaunchWizard() {
           signature={signature}
           buySignature={buySignature}
           devBuy={devBuyResult}
+          listing={listing}
           clusterQuery={clusterQuery}
           onReset={reset}
           onRecheckBuy={() => void recheckBuy()}

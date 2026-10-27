@@ -31,7 +31,9 @@ export interface LaunchRecord {
   rejectionReason?: string;
 }
 
-const DATA_DIR = path.join(process.cwd(), ".data");
+const DATA_DIR = process.env.SPAWNPAD_DATA_DIR
+  ? path.resolve(process.env.SPAWNPAD_DATA_DIR)
+  : path.join(process.cwd(), ".data");
 const FILE = path.join(DATA_DIR, "launches.json");
 
 function ensureDir() {

@@ -4,11 +4,24 @@
  * Token feed backed by SpawnPad's verified-launch store.
  * Only server-verified launches are shown as SpawnPad launches — a matching
  * suffix alone is never enough (anti-claim protection).
+ *
+ * Registration recovery: if a verified launch's registration POST failed at
+ * launch time (e.g. the dev server recompiled mid-flight), the payload is
+ * parked in localStorage. On feed load it is reconciled ONCE via
+ * /api/launches/reconcile (server re-verifies the launch on-chain, bounded
+ * RPC), then the feed refetches. No polling, no unbounded retries.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { ShieldCheck, Search, ArrowUpRight } from "lucide-react";
+import { ShieldCheck, Search, ArrowUpRight, RefreshCw, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { filterLaunchRecords, type FeedTab } from "@/lib/launch/feed-filter";
+import {
+  browserReconcileParkedLaunch,
+  browserReadPendingLaunch,
+  LAUNCHES_UPDATED_EVENT,
+} from "@/lib/launch/register-browser";
+import { getNetwork } from "@/lib/config";
 
 export interface LaunchRecord {
   mint: string;
@@ -21,7 +34,7 @@ export interface LaunchRecord {
   launchedAt: number;
 }
 
-export type FeedTab = "all" | "live" | "graduated";
+export type { FeedTab };
 
 export function TokenFeed({
   title,
@@ -36,40 +49,83 @@ export function TokenFeed({
   const [query, setQuery] = useState("");
   const [records, setRecords] = useState<LaunchRecord[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reconciling, setReconciling] = useState(false);
 
+  const fetchRecords = useCallback(async () => {
+    const r = await fetch(`/api/launches?limit=100${verifiedOnly ? "&verified=1" : ""}`);
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || "failed to load");
+    return d.records as LaunchRecord[];
+  }, [verifiedOnly]);
+
+  // Initial load + one-shot reconciliation of a parked launch (if any).
   useEffect(() => {
     let live = true;
     (async () => {
       try {
-        const r = await fetch(`/api/launches?limit=100${verifiedOnly ? "&verified=1" : ""}`);
-        const d = await r.json();
-        if (!live) return;
-        if (!d.ok) throw new Error(d.error || "failed to load");
-        setRecords(d.records);
-      } catch (e: any) {
-        if (live) setError(String(e?.message || e));
+        const parked = browserReadPendingLaunch(getNetwork());
+        if (parked) {
+          setReconciling(true);
+          await browserReconcileParkedLaunch();
+          if (!live) return;
+          setReconciling(false);
+        }
+        const recs = await fetchRecords();
+        if (live) setRecords(recs);
+      } catch (e: unknown) {
+        if (live) {
+          setError(String((e as Error)?.message || e));
+          setReconciling(false);
+        }
       }
     })();
     return () => {
       live = false;
     };
-  }, [verifiedOnly]);
+  }, [fetchRecords]);
+
+  // A successful registration elsewhere (e.g. the launch wizard) asks the
+  // feed to refetch exactly once — event-driven, not polled.
+  useEffect(() => {
+    let live = true;
+    const handler = () => {
+      (async () => {
+        try {
+          const recs = await fetchRecords();
+          if (live) {
+            setRecords(recs);
+            setError(null);
+          }
+        } catch {
+          /* transient — the user can retry via the Refresh button */
+        }
+      })();
+    };
+    window.addEventListener(LAUNCHES_UPDATED_EVENT, handler);
+    return () => {
+      live = false;
+      window.removeEventListener(LAUNCHES_UPDATED_EVENT, handler);
+    };
+  }, [fetchRecords]);
+
+  const manualRefresh = useCallback(() => {
+    setReconciling(true);
+    (async () => {
+      try {
+        const recs = await fetchRecords();
+        setRecords(recs);
+        setError(null);
+      } catch (e: unknown) {
+        setError(String((e as Error)?.message || e));
+      } finally {
+        setReconciling(false);
+      }
+    })();
+  }, [fetchRecords]);
 
   const filtered = useMemo(() => {
     if (!records) return null;
-    let out = records;
-    if (tab === "live") out = out.filter((r) => r.status === "verified");
-    if (tab === "graduated") out = out.filter((r) => r.status === "verified");
-    if (query.trim()) {
-      const q = query.trim().toLowerCase();
-      out = out.filter(
-        (r) =>
-          r.name.toLowerCase().includes(q) ||
-          r.symbol.toLowerCase().includes(q) ||
-          r.mint.toLowerCase().includes(q)
-      );
-    }
-    return out;
+    return filterLaunchRecords(records, { tab, query });
   }, [records, tab, query]);
 
   return (
@@ -90,6 +146,16 @@ export function TokenFeed({
             className="w-48 bg-transparent font-mono text-[13px] text-ink outline-none placeholder:text-faint"
           />
         </div>
+        <button
+          onClick={manualRefresh}
+          disabled={reconciling}
+          aria-label="Refresh launches"
+          title="Re-fetch verified launches"
+          className="flex items-center gap-1.5 rounded-full border border-line bg-raised/60 px-3 py-1.5 font-mono text-[12px] text-muted transition-colors hover:border-acid/50 hover:text-acid disabled:opacity-50"
+        >
+          <RefreshCw className={`size-3.5 ${reconciling ? "animate-spin" : ""}`} />
+          Refresh
+        </button>
         <div className="flex rounded-full border border-line bg-raised/60 p-1">
           {(["all", "live", "graduated"] as FeedTab[]).map((t) => (
             <button
@@ -108,6 +174,16 @@ export function TokenFeed({
           ))}
         </div>
       </div>
+      {reconciling && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex items-center gap-2 rounded-xl border border-line bg-raised/40 px-4 py-2 font-mono text-[12px] text-muted"
+        >
+          <Loader2 className="size-3.5 animate-spin" />
+          Checking for a recently launched token that is still being listed…
+        </div>
+      )}
       <FeedBody records={records} filtered={filtered} error={error} />
     </div>
   );

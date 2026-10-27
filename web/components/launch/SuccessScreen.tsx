@@ -3,10 +3,15 @@
 /**
  * Verified success screen (Phase 8). Everything shown comes from confirmed
  * on-chain data — estimates are never displayed as actuals.
+ *
+ * Listing status is displayed honestly and separately from the on-chain
+ * launch outcome: "listed", "pending" (registration will be reconciled on
+ * the feed's next load) or "failed" (with the server's reason).
  */
-import { BadgeCheck, Copy, ExternalLink, RefreshCw } from "lucide-react";
+import { BadgeCheck, Copy, ExternalLink, RefreshCw, ShieldCheck } from "lucide-react";
 import { useState } from "react";
 import { MANDATORY_SUFFIX, isSpawnVanityAddress } from "@/lib/config";
+import type { RegistrationOutcome } from "@/lib/launch/register-browser";
 
 export interface DevBuyResultView {
   enabled: boolean;
@@ -32,6 +37,7 @@ export function SuccessScreen({
   signature,
   buySignature,
   devBuy,
+  listing,
   clusterQuery,
   onReset,
   onRecheckBuy,
@@ -45,6 +51,8 @@ export function SuccessScreen({
   /** Dev-buy transaction signature when it ran separately (two-stage flow). */
   buySignature?: string | null;
   devBuy: DevBuyResultView;
+  /** SpawnPad listing status (listed/pending/failed) — independent of the launch. */
+  listing?: RegistrationOutcome | null;
   clusterQuery: string;
   onReset: () => void;
   /** Verification-only recheck of a failed two-stage dev buy (read-only). */
@@ -105,6 +113,26 @@ export function SuccessScreen({
           </div>
         )}
         {signature && <div className="break-all text-muted"><span className="text-faint">tx</span> {signature}</div>}
+      </div>
+
+      {/* SpawnPad listing status — reported independently and honestly.
+          The on-chain launch is verified; whether the feed has registered it
+          yet is a separate fact the user should see. */}
+      <div className="flex items-start gap-2 rounded-xl border border-line bg-raised/40 p-3 font-mono text-[12px]">
+        <ShieldCheck className="mt-0.5 size-3.5 shrink-0 text-faint" />
+        {listing == null || listing.state === "listed" ? (
+          <span className="text-ok">Listed in SpawnPad&apos;s verified launches feed.</span>
+        ) : listing.state === "pending" ? (
+          <span className="text-warn">
+            Feed registration is pending — it will be verified and listed
+            automatically when the launches feed next loads (no action needed).
+          </span>
+        ) : (
+          <span className="text-crimson">
+            Feed registration failed: {listing.reason}. It will be retried when
+            the launches feed next loads.
+          </span>
+        )}
       </div>
 
       {/* Dev buy outcome — confirmed data only. Creation and buy are reported

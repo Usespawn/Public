@@ -2,15 +2,28 @@
  * Server-side launch verification.
  *
  * The backend re-derives every fact from the chain: the transaction must have
- * succeeded, must contain a create_v2 instruction against the official pump
- * program with the claimed mint, the mint must end in `Spw`, and the official
- * bonding-curve PDA must exist and be program-owned.
+ * succeeded, must contain an official pump.fun create (v2) instruction that
+ * references the claimed mint, the mint must have CO-SIGNED the transaction
+ * (the SpawnPad vanity keypair always co-signs), the mint must end in `Spw`,
+ * and the official bonding-curve PDA must exist and be program-owned.
+ *
+ * Implementation notes (v0-proof): pump-sdk launch transactions are VERSIONED.
+ * getParsedTransaction is used because the RPC resolves address-lookup-table
+ * keys server-side and exposes every instruction with an explicit programId —
+ * this avoids both the v0 `programIdIndex` pitfall (ix.programId is undefined
+ * on raw versioned messages) and unresolved-ALT failures. The pure decision
+ * helpers live in tx-inspect.ts (unit-tested in tests/web/).
  */
+import { Connection, PublicKey } from "@solana/web3.js";
 import {
-  Connection,
-  PublicKey,
-} from "@solana/web3.js";
-import { PUMP_PROGRAM_ID, bondingCurveAddress, isSpawnVanityAddress, getNetwork, getRpcUrl } from "@/lib/config";
+  PUMP_PROGRAM_ID,
+  TOKEN_2022_PROGRAM_ID,
+  bondingCurveAddress,
+  isSpawnVanityAddress,
+  getNetwork,
+  getRpcUrl,
+} from "@/lib/config";
+import { parsedTxIsSpawnCreate } from "@/lib/server/tx-inspect";
 
 export interface ServerVerification {
   ok: boolean;
@@ -28,7 +41,7 @@ export async function verifyLaunchSubmission(input: {
   if (input.network !== network) {
     return { ok: false, reason: `launch network ${input.network} does not match server network ${network}` };
   }
-  if (!/^[1-9A-HJ-NP-Za-km-z]{87,88}$/.test(signature) && !/^[1-9A-HJ-NP-Za-km-z]{32,88}$/.test(signature)) {
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,88}$/.test(signature)) {
     return { ok: false, reason: "malformed signature" };
   }
   if (!isSpawnVanityAddress(mint)) {
@@ -40,45 +53,38 @@ export async function verifyLaunchSubmission(input: {
   let mintInfo;
   try {
     mintInfo = await connection.getAccountInfo(new PublicKey(mint));
-  } catch (e: any) {
-    return { ok: false, reason: `rpc error: ${String(e?.message || e)}` };
+  } catch (e: unknown) {
+    return { ok: false, reason: `rpc error: ${String((e as Error)?.message || e)}` };
   }
   if (!mintInfo) return { ok: false, reason: "mint account not found on-chain" };
   // owner must be Token-2022 for pump.fun create_v2 coins
-  if (mintInfo.owner.toBase58() !== "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb") {
+  if (mintInfo.owner.toBase58() !== TOKEN_2022_PROGRAM_ID.toBase58()) {
     return { ok: false, reason: "mint is not a Token-2022 account" };
   }
 
   let tx;
   try {
-    tx = await connection.getTransaction(signature, {
+    tx = await connection.getParsedTransaction(signature, {
       maxSupportedTransactionVersion: 0,
       commitment: "confirmed",
     });
-  } catch (e: any) {
-    return { ok: false, reason: `rpc error: ${String(e?.message || e)}` };
+  } catch (e: unknown) {
+    return { ok: false, reason: `rpc error: ${String((e as Error)?.message || e)}` };
   }
   if (!tx) return { ok: false, reason: "transaction not found" };
-  if (tx.meta?.err) return { ok: false, reason: "transaction failed on-chain" };
 
-  // The transaction must touch the pump program and include the claimed mint.
-  // getAccountKeys covers both legacy and v0 messages; narrow types are loose
-  // here by design (web3.js typings differ across versions).
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const msg = tx.transaction.message as any;
-  const keys = msg.getAccountKeys
-    ? msg.getAccountKeys({ accountKeysFromMeta: tx.meta?.loadedAddresses })
-    : { key: msg.accountKeys };
-  const flat: PublicKey[] = Array.from(keys.key ?? keys);
-  if (!msg.instructions.some((ix: any) => ix.programId.toBase58() === PUMP_PROGRAM_ID.toBase58())) {
-    return { ok: false, reason: "transaction contains no official pump.fun program instruction" };
-  }
-  if (!flat.some((k) => k.toBase58() === mint)) {
-    return { ok: false, reason: "claimed mint is not part of the launch transaction" };
+  const createCheck = parsedTxIsSpawnCreate(tx, mint);
+  if (!createCheck.isCreate) {
+    return { ok: false, reason: createCheck.reason ?? "transaction is not a pump.fun launch" };
   }
 
   const bc = bondingCurveAddress(mint);
-  const bcInfo = await connection.getAccountInfo(new PublicKey(bc));
+  let bcInfo;
+  try {
+    bcInfo = await connection.getAccountInfo(new PublicKey(bc));
+  } catch (e: unknown) {
+    return { ok: false, reason: `rpc error: ${String((e as Error)?.message || e)}` };
+  }
   if (!bcInfo) return { ok: false, reason: "pump.fun bonding curve not found on-chain" };
   if (!bcInfo.owner.equals(PUMP_PROGRAM_ID)) {
     return { ok: false, reason: "bonding curve not owned by pump.fun program" };
